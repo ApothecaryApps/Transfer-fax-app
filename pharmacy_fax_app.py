@@ -1,4 +1,4 @@
-import streamlit as st
+ import streamlit as st
 import requests
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
@@ -10,7 +10,7 @@ from datetime import datetime
 
 st.set_page_config(page_title="Pharmacy Transfer Fax", layout="wide")
 st.title("🧾 Pharmacy Prescription Transfer Fax Generator")
-st.markdown("**Stable Version – Search Fixed**")
+st.markdown("**Improved Search: Name + Address**")
 
 # ====================== YOUR PHARMACY ======================
 st.header("Your Pharmacy Info (Requesting)")
@@ -33,76 +33,85 @@ with col4:
 
 fax_title = st.text_input("Fax Title", "Prescription Transfer Request")
 
-# ====================== RECEIVING PHARMACY SEARCH ======================
-st.header("Receiving Pharmacy")
+# ====================== IMPROVED SEARCH ======================
+st.header("Receiving Pharmacy - Live Search")
 
-search_col1, search_col2 = st.columns([3, 1])
-with search_col1:
-    search_term = st.text_input("Search pharmacies", placeholder="Walgreens #1263 or CVS Phoenix", value="Walgreen")
-with search_col2:
-    if st.button("🔍 Search", type="primary"):
-        if search_term.strip():
-            with st.spinner("Searching NPI Registry..."):
-                try:
-                    resp = requests.get(
-                        "https://npiregistry.cms.hhs.gov/api/",
-                        params={"version": "2.1", "organization_name": search_term, "limit": 15},
-                        timeout=10
-                    )
-                    if resp.status_code == 200:
-                        results = []
-                        for i, item in enumerate(resp.json().get("results", [])):
-                            name = item.get("basic", {}).get("organization_name", "Unknown Pharmacy")
-                            results.append({"name": name, "index": i})
-                        st.session_state.search_results = results
-                        st.success(f"Found {len(results)} results")
-                    else:
-                        st.error("API returned error")
-                except Exception as e:
-                    st.error("Search temporarily unavailable. Type name manually.")
+search_term = st.text_input("Search by name, store#, or city", 
+                           placeholder="CVS, Walgreens #1263, Walmart Phoenix", value="CVS")
 
-# Show results with UNIQUE keys
+if st.button("🔍 Search", type="primary"):
+    if search_term.strip():
+        with st.spinner("Searching NPI Registry..."):
+            try:
+                resp = requests.get(
+                    "https://npiregistry.cms.hhs.gov/api/",
+                    params={"version": "2.1", "organization_name": search_term, "limit": 15},
+                    timeout=10
+                )
+                if resp.status_code == 200:
+                    results = []
+                    for i, item in enumerate(resp.json().get("results", [])):
+                        basic = item.get("basic", {})
+                        addr = item.get("addresses", [{}])[0] if item.get("addresses") else {}
+                        
+                        name = basic.get("organization_name", "Unknown")
+                        city = addr.get("city", "")
+                        state = addr.get("state", "")
+                        postal = addr.get("postal_code", "")[:5]
+                        full_address = f"{city}, {state} {postal}".strip()
+                        
+                        results.append({
+                            "name": name,
+                            "address": full_address,
+                            "idx": i
+                        })
+                    st.session_state.search_results = results
+                    st.success(f"Found {len(results)} locations")
+                else:
+                    st.error("Search service issue")
+            except:
+                st.error("Could not connect to search. Type name manually.")
+    else:
+        st.warning("Please enter a search term")
+
+# Display rich results
 if "search_results" in st.session_state and st.session_state.search_results:
-    st.subheader("Tap to select a pharmacy")
+    st.subheader("Select the correct pharmacy:")
     for res in st.session_state.search_results:
-        if st.button(res["name"], key=f"pharm_{res['index']}"):
-            st.session_state.selected_pharmacy = res["name"]
+        display_text = f"**{res['name']}**  —  {res['address']}" if res['address'] else res['name']
+        if st.button(display_text, key=f"select_{res['idx']}"):
+            st.session_state.selected_pharmacy = f"{res['name']} - {res['address']}"
             st.success(f"✅ Selected: {res['name']}")
             st.rerun()
 
-# Selected pharmacy
-recv_name = st.text_input("Receiving Pharmacy Name / Store #", 
-                         value=st.session_state.get("selected_pharmacy", ""))
+# Final receiving field (shows full name + address)
+recv_name = st.text_input("Receiving Pharmacy on Fax", 
+                         value=st.session_state.get("selected_pharmacy", "CVS Pharmacy"), 
+                         help="This is what will appear on the fax")
 
-# ====================== PATIENT ======================
+# ====================== PATIENT & RX ======================
 st.header("Patient Information")
 pat_name = st.text_input("Patient Full Name", "Jane A. Smith")
 pat_dob = st.text_input("Date of Birth", "01/15/1985")
 
-# ====================== RX LINES ======================
 st.header("Prescriptions to Transfer")
-
 if "rx_list" not in st.session_state:
-    st.session_state.rx_list = [""]
+    st.session_state.rx_list = ["Metoprolol", "Furosemide"]
 
 for i in range(len(st.session_state.rx_list)):
-    st.session_state.rx_list[i] = st.text_input(
-        f"RX Line {i+1}", 
-        value=st.session_state.rx_list[i], 
-        key=f"rx_input_{i}"
-    )
+    st.session_state.rx_list[i] = st.text_input(f"RX Line {i+1}", value=st.session_state.rx_list[i], key=f"rx_{i}")
 
-col_add, col_rem = st.columns(2)
-with col_add:
-    if st.button("➕ Add RX Line"):
+col1, col2 = st.columns(2)
+with col1:
+    if st.button("➕ Add Line"):
         st.session_state.rx_list.append("")
         st.rerun()
-with col_rem:
+with col2:
     if len(st.session_state.rx_list) > 1 and st.button("🗑 Remove Last"):
         st.session_state.rx_list.pop()
         st.rerun()
 
-# ====================== GENERATE PDF ======================
+# ====================== PDF GENERATION ======================
 if st.button("Generate & Download Fax PDF", type="primary", use_container_width=True):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=50)
@@ -134,7 +143,7 @@ if st.button("Generate & Download Fax PDF", type="primary", use_container_width=
 
     data = [["Prescription / Request"]]
     for line in st.session_state.rx_list:
-        if line and line.strip():
+        if line.strip():
             data.append([line.strip()])
 
     if len(data) > 1:
@@ -153,7 +162,7 @@ if st.button("Generate & Download Fax PDF", type="primary", use_container_width=
     doc.build(story)
     buffer.seek(0)
 
-    st.success("✅ PDF Generated Successfully!")
+    st.success("✅ PDF Generated!")
     st.download_button(
         label="⬇️ Download Fax PDF",
         data=buffer,
