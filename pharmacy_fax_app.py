@@ -10,7 +10,7 @@ from datetime import datetime
 
 st.set_page_config(page_title="Pharmacy Transfer Fax", layout="wide")
 st.title("🧾 Pharmacy Prescription Transfer Fax Generator")
-st.markdown("**Improved Search: Name + Address**")
+st.markdown("**Refined Search: Separate Fields + Manual Add + Smarter Matching**")
 
 # ====================== YOUR PHARMACY ======================
 st.header("Your Pharmacy Info (Requesting)")
@@ -33,61 +33,108 @@ with col4:
 
 fax_title = st.text_input("Fax Title", "Prescription Transfer Request")
 
-# ====================== IMPROVED SEARCH ======================
-st.header("Receiving Pharmacy - Live Search")
+# ====================== REFINED SEARCH ======================
+st.header("Receiving Pharmacy - Smart Search")
 
-search_term = st.text_input("Search by name, store#, or city", 
-                           placeholder="CVS, Walgreens #1263, Walmart Phoenix", value="CVS")
+st.subheader("Search Criteria (fill any combination)")
+col_a, col_b = st.columns(2)
+with col_a:
+    search_name = st.text_input("Pharmacy Name", placeholder="St. John's Drug or CVS", value="St. John's Drug")
+    search_city = st.text_input("City", placeholder="St. John's or Phoenix")
+with col_b:
+    search_state = st.text_input("State (2-letter)", placeholder="AZ", max_chars=2)
+    search_zip = st.text_input("ZIP Code", placeholder="86036", max_chars=5)
 
-if st.button("🔍 Search", type="primary"):
-    if search_term.strip():
-        with st.spinner("Searching NPI Registry..."):
-            try:
-                resp = requests.get(
-                    "https://npiregistry.cms.hhs.gov/api/",
-                    params={"version": "2.1", "organization_name": search_term, "limit": 15},
-                    timeout=10
-                )
-                if resp.status_code == 200:
-                    results = []
-                    for i, item in enumerate(resp.json().get("results", [])):
-                        basic = item.get("basic", {})
-                        addr = item.get("addresses", [{}])[0] if item.get("addresses") else {}
-                        
-                        name = basic.get("organization_name", "Unknown")
-                        city = addr.get("city", "")
-                        state = addr.get("state", "")
-                        postal = addr.get("postal_code", "")[:5]
-                        full_address = f"{city}, {state} {postal}".strip()
-                        
-                        results.append({
-                            "name": name,
-                            "address": full_address,
-                            "idx": i
-                        })
-                    st.session_state.search_results = results
-                    st.success(f"Found {len(results)} locations")
-                else:
-                    st.error("Search service issue")
-            except:
-                st.error("Could not connect to search. Type name manually.")
+# Manual Add button
+if st.button("➕ Add Pharmacy Manually (for ones not found)"):
+    with st.expander("Manual Pharmacy Entry", expanded=True):
+        manual_name = st.text_input("Pharmacy Name (required)", key="manual_name")
+        manual_addr = st.text_input("Address / Store #", key="manual_addr")
+        manual_city = st.text_input("City", key="manual_city")
+        manual_state = st.text_input("State", key="manual_state")
+        manual_zip = st.text_input("ZIP", key="manual_zip")
+        if st.button("Save to My Custom List"):
+            if manual_name.strip():
+                new_custom = {
+                    "name": manual_name.strip(),
+                    "display": f"{manual_name.strip()} - {manual_addr.strip()} {manual_city.strip()}, {manual_state.strip()} {manual_zip.strip()}".strip()
+                }
+                if "custom_pharmacies" not in st.session_state:
+                    st.session_state.custom_pharmacies = []
+                st.session_state.custom_pharmacies.append(new_custom)
+                st.success(f"Added: {manual_name}")
+                st.rerun()
+
+# Show custom pharmacies
+if "custom_pharmacies" in st.session_state and st.session_state.custom_pharmacies:
+    st.subheader("My Custom Pharmacies")
+    for i, cust in enumerate(st.session_state.custom_pharmacies):
+        if st.button(cust["display"], key=f"custom_{i}"):
+            st.session_state.selected_pharmacy = cust["display"]
+            st.success(f"Selected custom: {cust['name']}")
+            st.rerun()
+
+# Smart Search button
+if st.button("🔍 Smart Search (tries St./Saint variations)", type="primary"):
+    if not search_name.strip() and not search_city.strip():
+        st.warning("Enter at least a name or city")
     else:
-        st.warning("Please enter a search term")
+        with st.spinner("Searching with smart variations..."):
+            results = []
+            seen = set()
+            
+            # Generate variations for better matching
+            name_variants = [search_name.strip()]
+            if "St." in search_name or "St " in search_name or "Saint" in search_name:
+                name_variants.append(search_name.replace("St.", "Saint").replace("St ", "Saint "))
+                name_variants.append(search_name.replace("Saint", "St."))
+            
+            for variant in name_variants:
+                params = {
+                    "version": "2.1",
+                    "limit": 10
+                }
+                if variant: params["organization_name"] = variant
+                if search_city: params["city"] = search_city
+                if search_state: params["state"] = search_state.upper()
+                if search_zip: params["postal_code"] = search_zip
+                
+                try:
+                    resp = requests.get("https://npiregistry.cms.hhs.gov/api/", params=params, timeout=10)
+                    if resp.status_code == 200:
+                        for item in resp.json().get("results", []):
+                            basic = item.get("basic", {})
+                            addr_list = item.get("addresses", [{}])
+                            addr = addr_list[0] if addr_list else {}
+                            name = basic.get("organization_name", "")
+                            city = addr.get("city", "")
+                            state = addr.get("state", "")
+                            postal = addr.get("postal_code", "")[:5]
+                            display = f"{name} — {city}, {state} {postal}".strip(" ,")
+                            npi = item.get("number", "")
+                            key = f"{name}|{city}|{state}"  # dedupe
+                            if name and key not in seen:
+                                seen.add(key)
+                                results.append({"name": name, "display": display, "idx": len(results)})
+                except:
+                    pass  # continue with other variants
+            
+            st.session_state.search_results = results
+            st.success(f"Found {len(results)} matches (including variations)")
 
-# Display rich results
+# Display search results
 if "search_results" in st.session_state and st.session_state.search_results:
     st.subheader("Select the correct pharmacy:")
     for res in st.session_state.search_results:
-        display_text = f"**{res['name']}**  —  {res['address']}" if res['address'] else res['name']
-        if st.button(display_text, key=f"select_{res['idx']}"):
-            st.session_state.selected_pharmacy = f"{res['name']} - {res['address']}"
+        if st.button(res["display"], key=f"select_{res['idx']}"):
+            st.session_state.selected_pharmacy = res["display"]
             st.success(f"✅ Selected: {res['name']}")
             st.rerun()
 
-# Final receiving field (shows full name + address)
-recv_name = st.text_input("Receiving Pharmacy on Fax", 
-                         value=st.session_state.get("selected_pharmacy", "CVS Pharmacy"), 
-                         help="This is what will appear on the fax")
+# Final receiving field
+recv_name = st.text_input("Receiving Pharmacy Name / Store # (appears on fax)", 
+                         value=st.session_state.get("selected_pharmacy", ""), 
+                         help="Full name + location shown here for clarity on the fax")
 
 # ====================== PATIENT & RX ======================
 st.header("Patient Information")
@@ -96,14 +143,14 @@ pat_dob = st.text_input("Date of Birth", "01/15/1985")
 
 st.header("Prescriptions to Transfer")
 if "rx_list" not in st.session_state:
-    st.session_state.rx_list = ["Metoprolol", "Furosemide"]
+    st.session_state.rx_list = [""]
 
 for i in range(len(st.session_state.rx_list)):
     st.session_state.rx_list[i] = st.text_input(f"RX Line {i+1}", value=st.session_state.rx_list[i], key=f"rx_{i}")
 
 col1, col2 = st.columns(2)
 with col1:
-    if st.button("➕ Add Line"):
+    if st.button("➕ Add RX Line"):
         st.session_state.rx_list.append("")
         st.rerun()
 with col2:
@@ -111,7 +158,7 @@ with col2:
         st.session_state.rx_list.pop()
         st.rerun()
 
-# ====================== PDF GENERATION ======================
+# ====================== PDF ======================
 if st.button("Generate & Download Fax PDF", type="primary", use_container_width=True):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=50)
@@ -169,4 +216,4 @@ if st.button("Generate & Download Fax PDF", type="primary", use_container_width=
         file_name=f"Transfer_Request_{pat_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.pdf",
         mime="application/pdf",
         use_container_width=True
-)
+    )
