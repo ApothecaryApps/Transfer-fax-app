@@ -10,13 +10,13 @@ from datetime import datetime
 
 st.set_page_config(page_title="Pharmacy Transfer Fax", layout="wide")
 st.title("🧾 Pharmacy Prescription Transfer Fax Generator")
-st.markdown("**Live Version with NPI Pharmacy Search**")
+st.markdown("**Stable Version – Search Fixed**")
 
 # ====================== YOUR PHARMACY ======================
 st.header("Your Pharmacy Info (Requesting)")
 col1, col2 = st.columns(2)
 with col1:
-    req_name = st.text_input("Pharmacy Name", "Example Pharmacy")
+    req_name = st.text_input("Pharmacy Name", "Western Drug")
     req_address = st.text_input("Address", "123 Main St")
     req_citystatezip = st.text_input("City, State ZIP", "Tempe, AZ 85281")
 with col2:
@@ -27,81 +27,80 @@ with col2:
 
 col3, col4 = st.columns(2)
 with col3:
-    pharmacist_name = st.text_input("Supervising Pharmacist", "John Doe, PharmD")
+    pharmacist_name = st.text_input("Supervising Pharmacist", "Craig Doe, PharmD")
 with col4:
     tech_name = st.text_input("Technician (optional)", "")
 
 fax_title = st.text_input("Fax Title", "Prescription Transfer Request")
 
-# ====================== RECEIVING PHARMACY ======================
+# ====================== RECEIVING PHARMACY SEARCH ======================
 st.header("Receiving Pharmacy")
 
 search_col1, search_col2 = st.columns([3, 1])
 with search_col1:
-    search_term = st.text_input("Search pharmacies", 
-                               placeholder="Walgreens #1263  or  CVS Phoenix")
+    search_term = st.text_input("Search pharmacies", placeholder="Walgreens #1263 or CVS Phoenix", value="Walgreen")
 with search_col2:
     if st.button("🔍 Search", type="primary"):
         if search_term.strip():
-            with st.spinner("Searching..."):
+            with st.spinner("Searching NPI Registry..."):
                 try:
-                    url = "https://npiregistry.cms.hhs.gov/api/"
-                    params = {"version": "2.1", "organization_name": search_term, "limit": 15}
-                    resp = requests.get(url, params=params, timeout=10)
+                    resp = requests.get(
+                        "https://npiregistry.cms.hhs.gov/api/",
+                        params={"version": "2.1", "organization_name": search_term, "limit": 15},
+                        timeout=10
+                    )
                     if resp.status_code == 200:
                         results = []
-                        for item in resp.json().get("results", [])[:10]:
-                            basic = item.get("basic", {})
-                            addr = item.get("addresses", [{}])[0] if item.get("addresses") else {}
-                            name = basic.get("organization_name", "Unknown")
-                            results.append(name)
+                        for i, item in enumerate(resp.json().get("results", [])):
+                            name = item.get("basic", {}).get("organization_name", "Unknown Pharmacy")
+                            results.append({"name": name, "index": i})
                         st.session_state.search_results = results
                         st.success(f"Found {len(results)} results")
                     else:
-                        st.error("Search service unavailable")
-                except:
-                    st.error("Search temporarily unavailable — type manually below")
+                        st.error("API returned error")
+                except Exception as e:
+                    st.error("Search temporarily unavailable. Type name manually.")
 
-# Show search results
-if "search_results" in st.session_state:
-    st.subheader("Search Results")
-    for name in st.session_state.search_results:
-        if st.button(name):
-            st.session_state.selected_pharmacy = name
+# Show results with UNIQUE keys
+if "search_results" in st.session_state and st.session_state.search_results:
+    st.subheader("Tap to select a pharmacy")
+    for res in st.session_state.search_results:
+        if st.button(res["name"], key=f"pharm_{res['index']}"):
+            st.session_state.selected_pharmacy = res["name"]
+            st.success(f"✅ Selected: {res['name']}")
             st.rerun()
 
+# Selected pharmacy
 recv_name = st.text_input("Receiving Pharmacy Name / Store #", 
-                         value=st.session_state.get("selected_pharmacy", "Walgreens #1263"))
+                         value=st.session_state.get("selected_pharmacy", ""))
 
 # ====================== PATIENT ======================
 st.header("Patient Information")
 pat_name = st.text_input("Patient Full Name", "Jane A. Smith")
 pat_dob = st.text_input("Date of Birth", "01/15/1985")
 
-# ====================== RX LINES (FIXED) ======================
+# ====================== RX LINES ======================
 st.header("Prescriptions to Transfer")
 
 if "rx_list" not in st.session_state:
     st.session_state.rx_list = [""]
 
-# Display current lines
-new_list = []
-for i, text in enumerate(st.session_state.rx_list):
-    col1, col2 = st.columns([5, 1])
-    with col1:
-        new_text = st.text_input(f"RX Line {i+1}", value=text, key=f"rx_input_{i}")
-    with col2:
-        if st.button("🗑", key=f"del_{i}"):
-            new_list = [x for j, x in enumerate(st.session_state.rx_list) if j != i]
-            st.session_state.rx_list = new_list
-            st.rerun()
-    new_list.append(new_text)
+for i in range(len(st.session_state.rx_list)):
+    st.session_state.rx_list[i] = st.text_input(
+        f"RX Line {i+1}", 
+        value=st.session_state.rx_list[i], 
+        key=f"rx_input_{i}"
+    )
 
-st.session_state.rx_list = new_list
-
-if st.button("➕ Add Another RX Line"):
-    st.session_state.rx_list.append("")
-    st.rerun()
+col_add, col_rem = st.columns(2)
+with col_add:
+    if st.button("➕ Add RX Line"):
+        st.session_state.rx_list.append("")
+        st.rerun()
+with col_rem:
+    if len(st.session_state.rx_list) > 1 and st.button("🗑 Remove Last"):
+        st.session_state.rx_list.pop()
+        st.rerun()
 
 # ====================== GENERATE PDF ======================
 if st.button("Generate & Download Fax PDF", type="primary", use_container_width=True):
@@ -135,7 +134,7 @@ if st.button("Generate & Download Fax PDF", type="primary", use_container_width=
 
     data = [["Prescription / Request"]]
     for line in st.session_state.rx_list:
-        if line.strip():
+        if line and line.strip():
             data.append([line.strip()])
 
     if len(data) > 1:
@@ -161,4 +160,4 @@ if st.button("Generate & Download Fax PDF", type="primary", use_container_width=
         file_name=f"Transfer_Request_{pat_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.pdf",
         mime="application/pdf",
         use_container_width=True
-    )
+)
