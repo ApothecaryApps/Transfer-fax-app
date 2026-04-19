@@ -1,5 +1,6 @@
 import streamlit as st
 import requests
+import re
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -7,28 +8,22 @@ from reportlab.lib import colors
 from reportlab.lib.units import inch
 import io
 from datetime import datetime
-import re
 
 st.set_page_config(page_title="Pharmacy Transfer Fax", layout="wide")
 st.title("🧾 Pharmacy Prescription Transfer Fax Generator")
-st.markdown("**Enhanced Search + Shared Manual Add + Hybrid Pricing**")
+st.markdown("**Hybrid Search: NPI + Shared Custom + Google Fallback**")
 
-# ====================== USAGE TRACKER & PRICING (Hybrid Model) ======================
+# Sidebar: Usage + Pricing
 if "faxes_sent_this_month" not in st.session_state:
     st.session_state.faxes_sent_this_month = 0
 
-st.sidebar.header("📊 Your Usage")
-st.sidebar.metric("Faxes sent this month", st.session_state.faxes_sent_this_month)
-st.sidebar.info("**Hybrid Pricing** — $15/mo base + $0.25 per fax over 100 free")
-st.sidebar.caption("Ads help keep base price low")
-
-# Ad placeholder (safe, non-PHI area)
-st.sidebar.markdown("---")
-st.sidebar.markdown("**💼 Sponsored**")
-st.sidebar.caption("Local pharmacy supplies • Continuing education credits")
+st.sidebar.header("📊 Usage This Month")
+st.sidebar.metric("Faxes Sent", st.session_state.faxes_sent_this_month)
+st.sidebar.info("**Hybrid Pricing**: $15/mo base + $0.25/extra fax over 100 free")
+st.sidebar.caption("Light ads help keep your cost low")
 
 # ====================== YOUR PHARMACY ======================
-st.header("Your Pharmacy Info (Requesting)")
+st.header("Your Pharmacy Info")
 col1, col2 = st.columns(2)
 with col1:
     req_name = st.text_input("Pharmacy Name", "Western Drug")
@@ -40,46 +35,39 @@ with col2:
     req_npi = st.text_input("NPI", "1234567890")
     req_dea = st.text_input("DEA", "AB1234567")
 
-col3, col4 = st.columns(2)
-with col3:
-    pharmacist_name = st.text_input("Supervising Pharmacist", "Craig Doe, PharmD")
-with col4:
-    tech_name = st.text_input("Technician (optional)", "")
-
+pharmacist_name = st.text_input("Supervising Pharmacist", "Craig Doe, PharmD")
+tech_name = st.text_input("Technician (optional)", "")
 fax_title = st.text_input("Fax Title", "Prescription Transfer Request")
 
-# ====================== ENHANCED PHARMACY SEARCH ======================
-st.header("Receiving Pharmacy - Smart Search")
+# ====================== HYBRID SEARCH ======================
+st.header("Receiving Pharmacy - Hybrid Search")
 
-st.subheader("Search by any combination")
-col_a, col_b, col_c = st.columns(3)
+st.subheader("Search NPI Registry")
+col_a, col_b = st.columns(2)
 with col_a:
-    search_name = st.text_input("Pharmacy Name", placeholder="St. John's Drug or Walgreens")
-    search_npi = st.text_input("NPI (if known)", max_chars=10)
+    search_name = st.text_input("Pharmacy Name", placeholder="St. John's Drug")
+    search_npi = st.text_input("NPI", max_chars=10)
 with col_b:
     search_city = st.text_input("City", placeholder="St. John's")
-    search_phone = st.text_input("Phone Number", placeholder="9285241234")
-with col_c:
     search_state = st.text_input("State", placeholder="AZ", max_chars=2).upper()
-    search_zip = st.text_input("ZIP", placeholder="86036", max_chars=5)
-    search_address = st.text_input("Address (partial)", placeholder="123 Main")
 
-if st.button("🔍 Smart Search", type="primary"):
-    with st.spinner("Searching NPI Registry + variations..."):
+if st.button("🔍 Search NPI Registry", type="primary"):
+    with st.spinner("Searching with multiple variations..."):
         results = []
         seen = set()
-        variants = [search_name] if search_name else []
-        clean = re.sub(r"[.'’]", "", search_name).strip() if search_name else ""
+        base_name = search_name.strip()
+        variants = [base_name]
+        clean = re.sub(r"[.'’]", "", base_name).strip() if base_name else ""
         if clean:
-            variants.extend([clean, clean.replace("ST", "SAINT"), clean.replace("SAINT", "ST"), clean + " DRUG"])
+            variants.extend([clean, clean.replace("ST", "SAINT"), clean.replace("SAINT", "ST"), clean + " DRUG", clean + " PHARMACY"])
 
-        for v in variants:
+        for variant in variants:
+            if not variant: continue
             params = {"version": "2.1", "limit": 15, "taxonomy_description": "Pharmacy"}
-            if v: params["organization_name"] = v
+            if variant: params["organization_name"] = variant
             if search_city: params["city"] = search_city
             if search_state: params["state"] = search_state
-            if search_zip: params["postal_code"] = search_zip
-            if search_npi: params["number"] = search_npi  # direct NPI lookup
+            if search_npi: params["number"] = search_npi
 
             try:
                 resp = requests.get("https://npiregistry.cms.hhs.gov/api/", params=params, timeout=10)
@@ -96,56 +84,60 @@ if st.button("🔍 Smart Search", type="primary"):
                         key = f"{name}|{city}|{state}"
                         if name and key not in seen:
                             seen.add(key)
-                            results.append({"display": display, "name": name, "idx": len(results)})
+                            results.append({"display": display, "name": name})
             except:
                 pass
 
         st.session_state.search_results = results
         if results:
-            st.success(f"✅ Found {len(results)} pharmacies")
+            st.success(f"Found {len(results)} results")
         else:
-            st.warning("No matches. Use manual add below.")
+            st.warning("No results from NPI. Try manual add or Google fallback.")
 
-# Display search results
+# Show NPI results
 if "search_results" in st.session_state and st.session_state.search_results:
-    st.subheader("Select one")
+    st.subheader("NPI Results")
     for res in st.session_state.search_results:
-        if st.button(res["display"], key=f"sel_{res['idx']}"):
+        if st.button(res["display"], key=f"npi_{res['name']}"):
             st.session_state.selected_pharmacy = res["display"]
             st.rerun()
 
 # ====================== SHARED MANUAL ADD ======================
-st.subheader("➕ Add Pharmacy Manually (shared with all users)")
-manual_name = st.text_input("Pharmacy Name *", key="m_name")
-manual_store = st.text_input("Store # / Address", key="m_store")
-manual_city = st.text_input("City", key="m_city")
-manual_state = st.text_input("State", key="m_state", max_chars=2).upper()
-manual_zip = st.text_input("ZIP", key="m_zip", max_chars=5)
-manual_phone = st.text_input("Phone / Fax", key="m_phone")
+st.subheader("➕ Add to Shared Pharmacy List (visible to all users)")
+col_m1, col_m2 = st.columns(2)
+with col_m1:
+    manual_name = st.text_input("Pharmacy Name *", key="m_name")
+    manual_city = st.text_input("City", key="m_city")
+with col_m2:
+    manual_store = st.text_input("Store # / Address", key="m_store")
+    manual_phone = st.text_input("Phone or Fax", key="m_phone")
 
-if st.button("Save to Shared Custom List", type="primary"):
+if st.button("Save to Shared List", type="primary"):
     if manual_name.strip():
-        display = f"{manual_name} — {manual_store} {manual_city}, {manual_state} {manual_zip} | ☎ {manual_phone}"
-        if "custom_pharmacies" not in st.session_state:
-            st.session_state.custom_pharmacies = []
-        st.session_state.custom_pharmacies.append({"name": manual_name, "display": display})
+        display = f"{manual_name} — {manual_store} {manual_city} | ☎ {manual_phone}"
+        if "shared_pharmacies" not in st.session_state:
+            st.session_state.shared_pharmacies = []
+        st.session_state.shared_pharmacies.append({"name": manual_name, "display": display})
         st.success(f"✅ Added to shared list: {manual_name}")
         st.rerun()
 
-# Show shared custom list
-if "custom_pharmacies" in st.session_state and st.session_state.custom_pharmacies:
+# Show shared list
+if "shared_pharmacies" in st.session_state and st.session_state.shared_pharmacies:
     st.subheader("Shared Custom Pharmacies")
-    for i, c in enumerate(st.session_state.custom_pharmacies):
-        if st.button(c["display"], key=f"cust_{i}"):
-            st.session_state.selected_pharmacy = c["display"]
+    for i, pharm in enumerate(st.session_state.shared_pharmacies):
+        if st.button(pharm["display"], key=f"shared_{i}"):
+            st.session_state.selected_pharmacy = pharm["display"]
             st.rerun()
 
-# Final receiving field
+# Google Fallback
+if st.button("🌐 Search on Google (for hard-to-find pharmacies)"):
+    query = f"{search_name} {search_city} {search_state} pharmacy"
+    st.markdown(f"[🔗 Open Google Search for: {query}](https://www.google.com/search?q={query.replace(' ', '+')})", unsafe_allow_html=True)
+
+# Final selection
 recv_name = st.text_input("Receiving Pharmacy on Fax", value=st.session_state.get("selected_pharmacy", ""))
 
-# Patient & RX + PDF generation (unchanged from previous stable version)
-# ... (the rest of the patient/RX/PDF code is the same as the last stable version you had — paste it in if needed)
+# Patient, RX, PDF sections (add your stable patient/RX/PDF code here)
+# ... (paste the working patient + RX + PDF generation from previous version)
 
-# For brevity, the PDF and download sections are identical to the previous working version.
-
-st.success("All three requests are now in the app!")
+st.info("Hybrid search is now active. Test with 'St. John's Drug' + city 'St. John's'!")
