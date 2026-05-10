@@ -10,7 +10,7 @@ from datetime import datetime
 
 st.set_page_config(page_title="Pharmacy Transfer Fax", layout="wide")
 st.title("🧾 Pharmacy Prescription Transfer Fax Generator")
-st.markdown("**Fax.Plus - Robust Final Attempt**")
+st.markdown("**Fax.Plus - Single Block Version**")
 
 FAXPLUS_TOKEN = "alohi_pat_csW4VhPcKBUAEwbHuyERJJ_aMKXjvtsjJDsGnEr7rtr5QdISTGpmm2sA60uN0YJpYyDkreEXJYMR9rJDkD"
 
@@ -46,39 +46,43 @@ if len(st.session_state.rx_list) > 1 and st.button("🗑 Remove Last"):
     st.session_state.rx_list.pop()
     st.rerun()
 
-# ====================== MAIN ACTION ======================
+# ====================== MAIN BUTTON ======================
 if st.button("📠 Generate PDF & Send Fax", type="primary", use_container_width=True):
     if not recv_fax_number.strip():
         st.error("Please enter receiving fax number")
     else:
-        with st.spinner("Creating PDF and sending..."):
+        with st.spinner("Generating PDF and sending..."):
             try:
-                # Generate PDF
+                # Generate PDF in memory
                 buffer = io.BytesIO()
-                doc = SimpleDocTemplate(buffer, pagesize=letter)
+                doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=50)
                 styles = getSampleStyleSheet()
-                bold = ParagraphStyle('Bold', parent=styles['Normal'], fontName="Helvetica-Bold")
+                bold = ParagraphStyle('Bold', parent=styles['Normal'], fontName="Helvetica-Bold", fontSize=11)
 
                 story = []
                 story.append(Paragraph(f"<b>{fax_title}</b>", styles['Heading1']))
                 story.append(Spacer(1, 12))
-                story.append(Paragraph(f"<b>{req_name}</b><br/>{req_address}<br/>{req_citystatezip}<br/>Phone: {req_phone} Fax: {req_fax}", styles['Normal']))
+                story.append(Paragraph(f"<b>{req_name}</b><br/>{req_address}<br/>{req_citystatezip}<br/>Phone: {req_phone} Fax: {req_fax}<br/>Requesting: {pharmacist_name}", styles['Normal']))
                 story.append(Spacer(1, 20))
                 story.append(Paragraph(f"<b>Transfers requested from:</b> {recv_name}", bold))
-                story.append(Spacer(1, 12))
-                story.append(Paragraph(f"<b>Patient:</b> {pat_name}   DOB: {pat_dob}", bold))
-                story.append(Spacer(1, 12))
+                story.append(Spacer(1, 15))
+                story.append(Paragraph(f"<b>Patient:</b> {pat_name}  DOB: {pat_dob}", bold))
+                story.append(Spacer(1, 15))
 
-                data = [["RX / Drug Info"]] + [[line] for line in st.session_state.rx_list if line.strip()]
-                t = Table(data, colWidths=[6.5*inch])
-                t.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 1, colors.black), ('BACKGROUND', (0,0), (-1,0), colors.lightgrey)]))
-                story.append(t)
+                data = [["Prescription / Request"]] + [[line] for line in st.session_state.rx_list if line.strip()]
+                if len(data) > 1:
+                    t = Table(data, colWidths=[6.5*inch])
+                    t.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.lightgrey), ('GRID', (0,0), (-1,-1), 1, colors.black), ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold')]))
+                    story.append(t)
+
+                story.append(Spacer(1, 30))
+                story.append(Paragraph(f"Generated: {datetime.now().strftime('%B %d, %Y %I:%M %p')}", styles['Normal']))
 
                 doc.build(story)
                 buffer.seek(0)
                 pdf_bytes = buffer.getvalue()
 
-                st.info(f"PDF generated ({len(pdf_bytes)} bytes)")
+                st.success(f"PDF generated ({len(pdf_bytes)} bytes)")
 
                 # Send to Fax.Plus
                 headers = {"Authorization": f"Bearer {FAXPLUS_TOKEN}"}
@@ -103,11 +107,11 @@ if st.button("📠 Generate PDF & Send Fax", type="primary", use_container_width
                     )
 
                     if send_resp.status_code in [200, 201]:
-                        st.success(f"✅ Fax sent successfully to {recv_fax_number}!")
+                        st.success(f"✅ Fax successfully sent to {recv_fax_number}!")
                         st.balloons()
                     else:
                         st.error(f"Send failed: {send_resp.text}")
             except Exception as e:
-                st.error(f"Error: {e}")
+                st.error(f"Error: {str(e)}")
 
-st.caption("Use the big red button above")
+st.caption("Click the big red button to test")
