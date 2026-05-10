@@ -10,7 +10,7 @@ from datetime import datetime
 
 st.set_page_config(page_title="Pharmacy Transfer Fax", layout="wide")
 st.title("🧾 Pharmacy Prescription Transfer Fax Generator")
-st.markdown("**Fax.Plus - One Action Version**")
+st.markdown("**Fax.Plus - One Button Final**")
 
 FAXPLUS_TOKEN = "alohi_pat_csW4VhPcKBUAEwbHuyERJJ_aMKXjvtsjJDsGnEr7rtr5QdISTGpmm2sA60uN0YJpYyDkreEXJYMR9rJDkD"
 
@@ -46,12 +46,12 @@ if len(st.session_state.rx_list) > 1 and st.button("🗑 Remove Last"):
     st.session_state.rx_list.pop()
     st.rerun()
 
-# ====================== ONE BUTTON ACTION ======================
+# ====================== ONE BUTTON ======================
 if st.button("📠 Generate PDF & Send Fax", type="primary", use_container_width=True):
     if not recv_fax_number.strip():
         st.error("Please enter receiving fax number")
     else:
-        with st.spinner("Creating PDF and sending..."):
+        with st.spinner("Generating and sending..."):
             try:
                 # Generate PDF
                 buffer = io.BytesIO()
@@ -84,7 +84,7 @@ if st.button("📠 Generate PDF & Send Fax", type="primary", use_container_width
 
                 st.success(f"PDF generated ({len(pdf_bytes)} bytes)")
 
-                # Send to Fax.Plus
+                # Send
                 headers = {"Authorization": f"Bearer {FAXPLUS_TOKEN}"}
                 upload_resp = requests.post(
                     "https://restapi.fax.plus/v3/accounts/self/files",
@@ -114,4 +114,4 @@ if st.button("📠 Generate PDF & Send Fax", type="primary", use_container_width
             except Exception as e:
                 st.error(f"Error: {e}")
 
-st.caption("Use the big red button above")
+st.caption("Use the big red button")
