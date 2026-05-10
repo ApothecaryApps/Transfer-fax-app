@@ -10,13 +10,13 @@ from datetime import datetime
 
 st.set_page_config(page_title="Pharmacy Transfer Fax", layout="wide")
 st.title("🧾 Pharmacy Prescription Transfer Fax Generator")
-st.markdown("**Fax.Plus - Single Block Version**")
+st.markdown("**Fax.Plus - One Button Version**")
 
 FAXPLUS_TOKEN = "alohi_pat_csW4VhPcKBUAEwbHuyERJJ_aMKXjvtsjJDsGnEr7rtr5QdISTGpmm2sA60uN0YJpYyDkreEXJYMR9rJDkD"
 
 fax_title = st.text_input("Fax Title", "Prescription Transfer Request")
 
-st.header("Your Pharmacy")
+st.header("Your Pharmacy Info")
 req_name = st.text_input("Pharmacy Name", "Western Drug")
 req_address = st.text_input("Address", "106 East Main Street")
 req_citystatezip = st.text_input("City, State ZIP", "Springerville, AZ 85938")
@@ -46,14 +46,14 @@ if len(st.session_state.rx_list) > 1 and st.button("🗑 Remove Last"):
     st.session_state.rx_list.pop()
     st.rerun()
 
-# ====================== MAIN BUTTON ======================
+# ====================== MAIN ACTION ======================
 if st.button("📠 Generate PDF & Send Fax", type="primary", use_container_width=True):
     if not recv_fax_number.strip():
         st.error("Please enter receiving fax number")
     else:
         with st.spinner("Generating PDF and sending..."):
             try:
-                # Generate PDF in memory
+                # Generate PDF
                 buffer = io.BytesIO()
                 doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=50)
                 styles = getSampleStyleSheet()
@@ -112,6 +112,6 @@ if st.button("📠 Generate PDF & Send Fax", type="primary", use_container_width
                     else:
                         st.error(f"Send failed: {send_resp.text}")
             except Exception as e:
-                st.error(f"Error: {str(e)}")
+                st.error(f"Error: {e}")
 
-st.caption("Click the big red button to test")
+st.caption("Use the big red button")
