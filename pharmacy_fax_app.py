@@ -10,7 +10,7 @@ from datetime import datetime
 
 st.set_page_config(page_title="Pharmacy Transfer Fax", layout="wide")
 st.title("🧾 Pharmacy Prescription Transfer Fax Generator")
-st.markdown("**Fax.Plus - One Button Final**")
+st.markdown("**Fax.Plus - Separate Buttons Version**")
 
 FAXPLUS_TOKEN = "alohi_pat_csW4VhPcKBUAEwbHuyERJJ_aMKXjvtsjJDsGnEr7rtr5QdISTGpmm2sA60uN0YJpYyDkreEXJYMR9rJDkD"
 
@@ -46,50 +46,49 @@ if len(st.session_state.rx_list) > 1 and st.button("🗑 Remove Last"):
     st.session_state.rx_list.pop()
     st.rerun()
 
-# ====================== ONE BUTTON ======================
-if st.button("📠 Generate PDF & Send Fax", type="primary", use_container_width=True):
+# ====================== GENERATE PDF ======================
+if st.button("Generate PDF", type="secondary", use_container_width=True):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=50)
+    styles = getSampleStyleSheet()
+    bold = ParagraphStyle('Bold', parent=styles['Normal'], fontName="Helvetica-Bold", fontSize=11)
+
+    story = []
+    story.append(Paragraph(f"<b>{fax_title}</b>", styles['Heading1']))
+    story.append(Spacer(1, 12))
+    story.append(Paragraph(f"<b>{req_name}</b><br/>{req_address}<br/>{req_citystatezip}<br/>Phone: {req_phone} Fax: {req_fax}<br/>Requesting: {pharmacist_name}", styles['Normal']))
+    story.append(Spacer(1, 20))
+    story.append(Paragraph(f"<b>Transfers requested from:</b> {recv_name}", bold))
+    story.append(Spacer(1, 15))
+    story.append(Paragraph(f"<b>Patient:</b> {pat_name}  DOB: {pat_dob}", bold))
+    story.append(Spacer(1, 15))
+
+    data = [["Prescription / Request"]] + [[line] for line in st.session_state.rx_list if line.strip()]
+    if len(data) > 1:
+        t = Table(data, colWidths=[6.5*inch])
+        t.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.lightgrey), ('GRID', (0,0), (-1,-1), 1, colors.black), ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold')]))
+        story.append(t)
+
+    story.append(Spacer(1, 30))
+    story.append(Paragraph(f"Generated: {datetime.now().strftime('%B %d, %Y %I:%M %p')}", styles['Normal']))
+
+    doc.build(story)
+    buffer.seek(0)
+    st.session_state.pdf_bytes = buffer.getvalue()
+    st.success(f"✅ PDF generated ({len(st.session_state.pdf_bytes)} bytes) - Ready to send")
+
+# ====================== SEND FAX ======================
+if "pdf_bytes" in st.session_state and st.button("📠 SEND FAX NOW", type="primary", use_container_width=True):
     if not recv_fax_number.strip():
         st.error("Please enter receiving fax number")
     else:
-        with st.spinner("Generating and sending..."):
+        with st.spinner("Uploading to Fax.Plus..."):
             try:
-                # Generate PDF
-                buffer = io.BytesIO()
-                doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=50)
-                styles = getSampleStyleSheet()
-                bold = ParagraphStyle('Bold', parent=styles['Normal'], fontName="Helvetica-Bold", fontSize=11)
-
-                story = []
-                story.append(Paragraph(f"<b>{fax_title}</b>", styles['Heading1']))
-                story.append(Spacer(1, 12))
-                story.append(Paragraph(f"<b>{req_name}</b><br/>{req_address}<br/>{req_citystatezip}<br/>Phone: {req_phone} Fax: {req_fax}<br/>Requesting: {pharmacist_name}", styles['Normal']))
-                story.append(Spacer(1, 20))
-                story.append(Paragraph(f"<b>Transfers requested from:</b> {recv_name}", bold))
-                story.append(Spacer(1, 15))
-                story.append(Paragraph(f"<b>Patient:</b> {pat_name}  DOB: {pat_dob}", bold))
-                story.append(Spacer(1, 15))
-
-                data = [["Prescription / Request"]] + [[line] for line in st.session_state.rx_list if line.strip()]
-                if len(data) > 1:
-                    t = Table(data, colWidths=[6.5*inch])
-                    t.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.lightgrey), ('GRID', (0,0), (-1,-1), 1, colors.black), ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold')]))
-                    story.append(t)
-
-                story.append(Spacer(1, 30))
-                story.append(Paragraph(f"Generated: {datetime.now().strftime('%B %d, %Y %I:%M %p')}", styles['Normal']))
-
-                doc.build(story)
-                buffer.seek(0)
-                pdf_bytes = buffer.getvalue()
-
-                st.success(f"PDF generated ({len(pdf_bytes)} bytes)")
-
-                # Send
                 headers = {"Authorization": f"Bearer {FAXPLUS_TOKEN}"}
                 upload_resp = requests.post(
                     "https://restapi.fax.plus/v3/accounts/self/files",
                     headers=headers,
-                    files={'file': ('transfer.pdf', pdf_bytes, 'application/pdf')}
+                    files={'file': ('transfer.pdf', st.session_state.pdf_bytes, 'application/pdf')}
                 )
 
                 if upload_resp.status_code not in [200, 201]:
@@ -114,4 +113,6 @@ if st.button("📠 Generate PDF & Send Fax", type="primary", use_container_width
             except Exception as e:
                 st.error(f"Error: {e}")
 
-st.caption("Use the big red button")
+# Download
+if "pdf_bytes" in st.session_state:
+    st.download_button("⬇️ Download PDF", st.session_state.pdf_bytes, "transfer_request.pdf", "application/pdf", use_container_width=True)
