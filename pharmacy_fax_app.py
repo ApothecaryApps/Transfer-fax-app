@@ -10,7 +10,7 @@ from datetime import datetime
 
 st.set_page_config(page_title="Pharmacy Transfer Fax", layout="wide")
 st.title("🧾 Pharmacy Prescription Transfer Fax Generator")
-st.markdown("**Fax.Plus - With File Uploader Fallback**")
+st.markdown("**Fax.Plus - With File Uploader**")
 
 FAXPLUS_TOKEN = "alohi_pat_csW4VhPcKBUAEwbHuyERJJ_aMKXjvtsjJDsGnEr7rtr5QdISTGpmm2sA60uN0YJpYyDkreEXJYMR9rJDkD"
 
@@ -78,40 +78,45 @@ if st.button("Generate PDF", type="secondary", use_container_width=True):
     st.success(f"✅ PDF generated ({len(st.session_state.pdf_bytes)} bytes)")
     st.download_button("⬇️ Download PDF", st.session_state.pdf_bytes, "transfer_request.pdf", "application/pdf", use_container_width=True)
 
-# Send Fax
-if "pdf_bytes" in st.session_state and st.button("📠 SEND FAX NOW", type="primary", use_container_width=True):
-    if not recv_fax_number.strip():
-        st.error("Please enter receiving fax number")
-    else:
-        with st.spinner("Uploading to Fax.Plus..."):
-            try:
-                headers = {"Authorization": f"Bearer {FAXPLUS_TOKEN}"}
-                upload_resp = requests.post(
-                    "https://restapi.fax.plus/v3/accounts/self/files",
-                    headers=headers,
-                    files={'file': ('transfer.pdf', st.session_state.pdf_bytes, 'application/pdf')}
-                )
+# Send Fax with File Uploader Fallback
+st.header("Send Fax")
+uploaded_file = st.file_uploader("Upload the PDF (if Generate button didn't work)", type=["pdf"])
 
-                if upload_resp.status_code not in [200, 201]:
-                    st.error(f"Upload failed: {upload_resp.text}")
-                else:
-                    file_path = upload_resp.json().get("path") or upload_resp.json().get("filename")
-                    send_resp = requests.post(
-                        "https://restapi.fax.plus/v3/accounts/self/outbox",
+if uploaded_file is not None:
+    pdf_bytes = uploaded_file.getvalue()
+    st.success(f"File ready ({len(pdf_bytes)} bytes)")
+
+    if st.button("📠 SEND THIS FILE", type="primary", use_container_width=True):
+        if not recv_fax_number.strip():
+            st.error("Please enter receiving fax number")
+        else:
+            with st.spinner("Sending..."):
+                try:
+                    headers = {"Authorization": f"Bearer {FAXPLUS_TOKEN}"}
+                    upload_resp = requests.post(
+                        "https://restapi.fax.plus/v3/accounts/self/files",
                         headers=headers,
-                        json={
-                            "to": [recv_fax_number.replace("-", "").replace(" ", "").replace("(", "").replace(")", "")],
-                            "files": [file_path],
-                            "comment": f"Prescription Transfer - {pat_name}"
-                        }
+                        files={'file': ('transfer.pdf', pdf_bytes, 'application/pdf')}
                     )
 
-                    if send_resp.status_code in [200, 201]:
-                        st.success(f"✅ Fax successfully sent to {recv_fax_number}!")
-                        st.balloons()
+                    if upload_resp.status_code not in [200, 201]:
+                        st.error(f"Upload failed: {upload_resp.text}")
                     else:
-                        st.error(f"Send failed: {send_resp.text}")
-            except Exception as e:
-                st.error(f"Error: {e}")
+                        file_path = upload_resp.json().get("path") or upload_resp.json().get("filename")
+                        send_resp = requests.post(
+                            "https://restapi.fax.plus/v3/accounts/self/outbox",
+                            headers=headers,
+                            json={
+                                "to": [recv_fax_number.replace("-", "").replace(" ", "").replace("(", "").replace(")", "")],
+                                "files": [file_path],
+                                "comment": f"Prescription Transfer - {pat_name}"
+                            }
+                        )
 
-st.caption("1. Click Generate PDF  2. Click Send Fax Now")
+                        if send_resp.status_code in [200, 201]:
+                            st.success(f"✅ Fax successfully sent to {recv_fax_number}!")
+                            st.balloons()
+                        else:
+                            st.error(f"Send failed: {send_resp.text}")
+                except Exception as e:
+                    st.error(f"Error: {e}")
