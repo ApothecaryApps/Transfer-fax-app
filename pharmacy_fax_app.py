@@ -10,13 +10,12 @@ from datetime import datetime
 
 st.set_page_config(page_title="Pharmacy Transfer Fax", layout="wide")
 st.title("🧾 Pharmacy Prescription Transfer Fax Generator")
-st.markdown("**Fax.Plus - With File Uploader**")
+st.markdown("**Fax.Plus - Bytes Fixed**")
 
 FAXPLUS_TOKEN = "alohi_pat_csW4VhPcKBUAEwbHuyERJJ_aMKXjvtsjJDsGnEr7rtr5QdISTGpmm2sA60uN0YJpYyDkreEXJYMR9rJDkD"
 
+# Form (simplified)
 fax_title = st.text_input("Fax Title", "Prescription Transfer Request")
-
-st.header("Your Pharmacy Info")
 req_name = st.text_input("Pharmacy Name", "Western Drug")
 req_address = st.text_input("Address", "106 East Main Street")
 req_citystatezip = st.text_input("City, State ZIP", "Springerville, AZ 85938")
@@ -24,15 +23,12 @@ req_phone = st.text_input("Phone", "(928) 333-4321")
 req_fax = st.text_input("Fax", "(928) 333-4328")
 pharmacist_name = st.text_input("Pharmacist", "Craig Mathews, PharmD")
 
-st.header("Receiving")
 recv_name = st.text_input("Receiving Pharmacy", "Walgreens #1234")
 recv_fax_number = st.text_input("Receiving Fax Number", placeholder="4805551234")
 
-st.header("Patient")
 pat_name = st.text_input("Patient Name", "Jane A. Smith")
 pat_dob = st.text_input("DOB", "01/15/1985")
 
-st.header("Prescriptions")
 if "rx_list" not in st.session_state:
     st.session_state.rx_list = ["Testing fax, give this to Craig", "Thank you!"]
 
@@ -75,28 +71,27 @@ if st.button("Generate PDF", type="secondary", use_container_width=True):
     doc.build(story)
     buffer.seek(0)
     st.session_state.pdf_bytes = buffer.getvalue()
-    st.success(f"✅ PDF generated ({len(st.session_state.pdf_bytes)} bytes)")
+    st.success(f"PDF generated ({len(st.session_state.pdf_bytes)} bytes)")
     st.download_button("⬇️ Download PDF", st.session_state.pdf_bytes, "transfer_request.pdf", "application/pdf", use_container_width=True)
 
-# Send Fax with File Uploader Fallback
-st.header("Send Fax")
-uploaded_file = st.file_uploader("Upload the PDF (if Generate button didn't work)", type=["pdf"])
+# File Uploader + Send
+uploaded_file = st.file_uploader("Or upload the PDF here", type=["pdf"])
 
 if uploaded_file is not None:
-    pdf_bytes = uploaded_file.getvalue()
-    st.success(f"File ready ({len(pdf_bytes)} bytes)")
+    st.session_state.pdf_bytes = uploaded_file.getvalue()
+    st.success(f"File ready ({len(st.session_state.pdf_bytes)} bytes)")
 
     if st.button("📠 SEND THIS FILE", type="primary", use_container_width=True):
         if not recv_fax_number.strip():
             st.error("Please enter receiving fax number")
         else:
-            with st.spinner("Sending..."):
+            with st.spinner("Sending to Fax.Plus..."):
                 try:
                     headers = {"Authorization": f"Bearer {FAXPLUS_TOKEN}"}
                     upload_resp = requests.post(
                         "https://restapi.fax.plus/v3/accounts/self/files",
                         headers=headers,
-                        files={'file': ('transfer.pdf', pdf_bytes, 'application/pdf')}
+                        files={'file': ('transfer.pdf', st.session_state.pdf_bytes, 'application/pdf')}
                     )
 
                     if upload_resp.status_code not in [200, 201]:
