@@ -10,7 +10,7 @@ from datetime import datetime
 
 st.set_page_config(page_title="Pharmacy Transfer Fax", layout="wide")
 st.title("🧾 Pharmacy Prescription Transfer Fax Generator")
-st.markdown("**Fax.Plus - One Button Version**")
+st.markdown("**Fax.Plus - One Action Version**")
 
 FAXPLUS_TOKEN = "alohi_pat_csW4VhPcKBUAEwbHuyERJJ_aMKXjvtsjJDsGnEr7rtr5QdISTGpmm2sA60uN0YJpYyDkreEXJYMR9rJDkD"
 
@@ -46,12 +46,12 @@ if len(st.session_state.rx_list) > 1 and st.button("🗑 Remove Last"):
     st.session_state.rx_list.pop()
     st.rerun()
 
-# ====================== MAIN ACTION ======================
+# ====================== ONE BUTTON ACTION ======================
 if st.button("📠 Generate PDF & Send Fax", type="primary", use_container_width=True):
     if not recv_fax_number.strip():
         st.error("Please enter receiving fax number")
     else:
-        with st.spinner("Generating PDF and sending..."):
+        with st.spinner("Creating PDF and sending..."):
             try:
                 # Generate PDF
                 buffer = io.BytesIO()
@@ -114,4 +114,4 @@ if st.button("📠 Generate PDF & Send Fax", type="primary", use_container_width
             except Exception as e:
                 st.error(f"Error: {e}")
 
-st.caption("Use the big red button")
+st.caption("Use the big red button above")
