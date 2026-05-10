@@ -10,7 +10,7 @@ from datetime import datetime
 
 st.set_page_config(page_title="Pharmacy Transfer Fax", layout="wide")
 st.title("🧾 Pharmacy Prescription Transfer Fax Generator")
-st.markdown("**Fax.Plus - Generate on Send**")
+st.markdown("**Fax.Plus - Last Attempt**")
 
 FAXPLUS_TOKEN = "alohi_pat_csW4VhPcKBUAEwbHuyERJJ_aMKXjvtsjJDsGnEr7rtr5QdISTGpmm2sA60uN0YJpYyDkreEXJYMR9rJDkD"
 
@@ -46,14 +46,14 @@ if len(st.session_state.rx_list) > 1 and st.button("🗑 Remove Last"):
     st.session_state.rx_list.pop()
     st.rerun()
 
-# ====================== SEND BUTTON (generates PDF on the fly) ======================
+# ====================== MAIN BUTTON ======================
 if st.button("📠 Generate PDF & Send Fax", type="primary", use_container_width=True):
     if not recv_fax_number.strip():
         st.error("Please enter receiving fax number")
     else:
         with st.spinner("Generating PDF and sending..."):
             try:
-                # Generate PDF fresh every time
+                # Generate PDF fresh
                 buffer = io.BytesIO()
                 doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=50)
                 styles = getSampleStyleSheet()
@@ -84,7 +84,7 @@ if st.button("📠 Generate PDF & Send Fax", type="primary", use_container_width
 
                 st.success(f"PDF generated ({len(pdf_bytes)} bytes)")
 
-                # Upload + Send
+                # Send
                 headers = {"Authorization": f"Bearer {FAXPLUS_TOKEN}"}
                 upload_resp = requests.post(
                     "https://restapi.fax.plus/v3/accounts/self/files",
