@@ -8,6 +8,8 @@ from reportlab.lib import colors
 from reportlab.lib.units import inch
 import io
 from datetime import datetime
+python
+from srfax import queue_fax, wait_for_fax
 
 st.set_page_config(page_title="Pharmacy Transfer Fax", layout="wide")
 st.title("🧾 Pharmacy Prescription Transfer Fax Generator")
@@ -95,30 +97,27 @@ if st.button("📠 Generate PDF & Send Fax", type="primary", use_container_width
                 # Send via ClickSend
                 auth = base64.b64encode(f"{CLICKSEND_USERNAME}:{CLICKSEND_API_KEY}".encode()).decode()
                 headers = {
-                    "Authorization": f"Basic {auth}",
-                    "Content-Type": "application/json"
-                }
+fax_id = queue_fax(
+                        st.secrets,
+                        recv_fax_number,
+                        pdf_bytes,
+                        filename="transfer.pdf",
+                    )
+                    st.info(f"Queued with SRFax. Job ID: {fax_id}")
+                    result = wait_for_fax(st.secrets, fax_id)
+                    status = None
+                    if isinstance(result, dict):
+                        status = result.get("SentStatus")
+                    elif isinstance(result, list) and result:
+                        status = result[0].get("SentStatus")
 
-                payload = {
-                    "messages": [{
-                        "to": recv_fax_number.replace("-", "").replace(" ", "").replace("(", "").replace(")", ""),
-                        "subject": fax_title,
-                        "body": f"Prescription Transfer Request - Patient: {pat_name}",
-                        "media": [{
-                            "type": "pdf",
-                            "content": base64.b64encode(pdf_bytes).decode('utf-8')
-                        }]
-                    }]
-                }
-
-                response = requests.post("https://rest.clicksend.com/v3/fax/send", headers=headers, json=payload)
-
-                if response.status_code in [200, 201]:
-                    st.success(f"✅ Fax successfully sent to {recv_fax_number}!")
-                    st.balloons()
-                else:
-                    st.error(f"Failed: {response.status_code} - {response.text}")
-            except Exception as e:
-                st.error(f"Error: {e}")
-
+                    if status == "Sent":
+                        st.success(f"✅ Fax successfully sent to {recv_fax_number}!")
+                        st.balloons()
+                    elif status == "Failed":
+                        st.error(f"Fax failed: {result}")
+                    else:
+                        st.warning(f"Still in progress / unknown status: {result}")
+                except Exception as e:
+                    st.error(f"Error: {e}")
 st.caption("Click the big red button to test")
