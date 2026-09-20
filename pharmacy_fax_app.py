@@ -1,25 +1,19 @@
 import streamlit as st
-import requests
-import base64
+import io
+from datetime import datetime
+
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.lib.units import inch
-import io
-from datetime import datetime
-python
+
 from srfax import queue_fax, wait_for_fax
 
 st.set_page_config(page_title="Pharmacy Transfer Fax", layout="wide")
 st.title("🧾 Pharmacy Prescription Transfer Fax Generator")
-st.markdown("**Live with ClickSend**")
+st.markdown("**Live with SRFax**")
 
-# ClickSend Credentials
-CLICKSEND_USERNAME = "craig.paysonapothecary@hotmail.com"
-CLICKSEND_API_KEY = "53194DC8-524D-3B8B-532A-E9F7C0C5C5B4"
-
-# ====================== FORM ======================
 st.header("Your Pharmacy Info (Requesting)")
 col1, col2 = st.columns(2)
 with col1:
@@ -47,7 +41,9 @@ if "rx_list" not in st.session_state:
     st.session_state.rx_list = ["Testing fax, give this to Craig", "Thank you!"]
 
 for i in range(len(st.session_state.rx_list)):
-    st.session_state.rx_list[i] = st.text_input(f"RX Line {i+1}", value=st.session_state.rx_list[i], key=f"rx_{i}")
+    st.session_state.rx_list[i] = st.text_input(
+        f"RX Line {i+1}", value=st.session_state.rx_list[i], key=f"rx_{i}"
+    )
 
 if st.button("➕ Add RX Line"):
     st.session_state.rx_list.append("")
@@ -56,68 +52,93 @@ if len(st.session_state.rx_list) > 1 and st.button("🗑 Remove Last"):
     st.session_state.rx_list.pop()
     st.rerun()
 
-# ====================== GENERATE & SEND ======================
+
+def build_pdf_bytes() -> bytes:
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=50
+    )
+    styles = getSampleStyleSheet()
+    bold = ParagraphStyle("Bold", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=11)
+
+    story = []
+    story.append(Paragraph(f"<b>{fax_title}</b>", styles["Heading1"]))
+    story.append(Spacer(1, 12))
+    story.append(
+        Paragraph(
+            f"<b>{req_name}</b><br/>{req_address}<br/>{req_citystatezip}<br/>"
+            f"Phone: {req_phone} Fax: {req_fax}<br/>Requesting: {pharmacist_name}"
+            + (f"<br/>Technician: {tech_name}" if tech_name.strip() else ""),
+            styles["Normal"],
+        )
+    )
+    story.append(Spacer(1, 20))
+    story.append(Paragraph(f"<b>Transfers requested from:</b> {recv_name}", bold))
+    story.append(Spacer(1, 15))
+    story.append(Paragraph(f"<b>Patient:</b> {pat_name}  DOB: {pat_dob}", bold))
+    story.append(Spacer(1, 15))
+
+    data = [["Prescription / Request"]] + [[line] for line in st.session_state.rx_list if line.strip()]
+    if len(data) > 1:
+        t = Table(data, colWidths=[6.5 * inch])
+        t.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                    ("GRID", (0, 0), (-1, -1), 1, colors.black),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ]
+            )
+        )
+        story.append(t)
+
+    story.append(Spacer(1, 30))
+    story.append(
+        Paragraph(f"Generated: {datetime.now().strftime('%B %d, %Y %I:%M %p')}", styles["Normal"])
+    )
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 if st.button("📠 Generate PDF & Send Fax", type="primary", use_container_width=True):
     if not recv_fax_number.strip():
         st.error("Please enter receiving fax number")
     else:
-        with st.spinner("Generating PDF and sending via ClickSend..."):
+        with st.spinner("Generating PDF and sending via SRFax..."):
             try:
-                # Generate PDF
-                buffer = io.BytesIO()
-                doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=50)
-                styles = getSampleStyleSheet()
-                bold = ParagraphStyle('Bold', parent=styles['Normal'], fontName="Helvetica-Bold", fontSize=11)
-
-                story = []
-                story.append(Paragraph(f"<b>{fax_title}</b>", styles['Heading1']))
-                story.append(Spacer(1, 12))
-                story.append(Paragraph(f"<b>{req_name}</b><br/>{req_address}<br/>{req_citystatezip}<br/>Phone: {req_phone} Fax: {req_fax}<br/>Requesting: {pharmacist_name}", styles['Normal']))
-                story.append(Spacer(1, 20))
-                story.append(Paragraph(f"<b>Transfers requested from:</b> {recv_name}", bold))
-                story.append(Spacer(1, 15))
-                story.append(Paragraph(f"<b>Patient:</b> {pat_name}  DOB: {pat_dob}", bold))
-                story.append(Spacer(1, 15))
-
-                data = [["Prescription / Request"]] + [[line] for line in st.session_state.rx_list if line.strip()]
-                if len(data) > 1:
-                    t = Table(data, colWidths=[6.5*inch])
-                    t.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.lightgrey), ('GRID', (0,0), (-1,-1), 1, colors.black), ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold')]))
-                    story.append(t)
-
-                story.append(Spacer(1, 30))
-                story.append(Paragraph(f"Generated: {datetime.now().strftime('%B %d, %Y %I:%M %p')}", styles['Normal']))
-
-                doc.build(story)
-                buffer.seek(0)
-                pdf_bytes = buffer.getvalue()
-
+                pdf_bytes = build_pdf_bytes()
                 st.success(f"PDF generated ({len(pdf_bytes)} bytes)")
+                st.download_button(
+                    "Download PDF",
+                    data=pdf_bytes,
+                    file_name="transfer.pdf",
+                    mime="application/pdf",
+                )
 
-                # Send via ClickSend
-                auth = base64.b64encode(f"{CLICKSEND_USERNAME}:{CLICKSEND_API_KEY}".encode()).decode()
-                headers = {
-fax_id = queue_fax(
-                        st.secrets,
-                        recv_fax_number,
-                        pdf_bytes,
-                        filename="transfer.pdf",
-                    )
-                    st.info(f"Queued with SRFax. Job ID: {fax_id}")
-                    result = wait_for_fax(st.secrets, fax_id)
-                    status = None
-                    if isinstance(result, dict):
-                        status = result.get("SentStatus")
-                    elif isinstance(result, list) and result:
-                        status = result[0].get("SentStatus")
+                fax_id = queue_fax(
+                    st.secrets,
+                    recv_fax_number,
+                    pdf_bytes,
+                    filename="transfer.pdf",
+                )
+                st.info(f"Queued with SRFax. Job ID: {fax_id}")
+                result = wait_for_fax(st.secrets, fax_id)
 
-                    if status == "Sent":
-                        st.success(f"✅ Fax successfully sent to {recv_fax_number}!")
-                        st.balloons()
-                    elif status == "Failed":
-                        st.error(f"Fax failed: {result}")
-                    else:
-                        st.warning(f"Still in progress / unknown status: {result}")
-                except Exception as e:
-                    st.error(f"Error: {e}")
-st.caption("Click the big red button to test")
+                status = None
+                if isinstance(result, dict):
+                    status = result.get("SentStatus")
+                elif isinstance(result, list) and result:
+                    status = result[0].get("SentStatus")
+
+                if status == "Sent":
+                    st.success(f"✅ Fax successfully sent to {recv_fax_number}!")
+                    st.balloons()
+                elif status == "Failed":
+                    st.error(f"Fax failed: {result}")
+                else:
+                    st.warning(f"Still in progress / unknown status: {result}")
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+st.caption("Generate builds the PDF, queues it with SRFax, then waits for Sent/Failed.")
