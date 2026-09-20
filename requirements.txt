@@ -1,3 +1,5 @@
 streamlit
 reportlab
 requests
+gspread
+google-auth
