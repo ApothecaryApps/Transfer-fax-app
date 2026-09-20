@@ -29,14 +29,43 @@ def digits_only(value: str) -> str:
     return re.sub(r"\D", "", value or "")
 
 
-def _client():
+def _service_account_info():
+    if "GCP_SERVICE_ACCOUNT" not in st.secrets:
+        raise ValueError(
+            "Missing GCP_SERVICE_ACCOUNT in Streamlit Secrets. "
+            "Add the full JSON between triple quotes."
+        )
     raw = st.secrets["GCP_SERVICE_ACCOUNT"]
-    info = json.loads(raw) if isinstance(raw, str) else dict(raw)
+    if raw is None:
+        raise ValueError("GCP_SERVICE_ACCOUNT is empty")
+    # Already a mapping (nested TOML table)
+    if not isinstance(raw, str):
+        return dict(raw)
+    text = raw.strip()
+    if not text:
+        raise ValueError("GCP_SERVICE_ACCOUNT is blank")
+    if not (text.startswith("{") and text.endswith("}")):
+        raise ValueError(
+            "GCP_SERVICE_ACCOUNT should be the full JSON object starting with { and ending with }"
+        )
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            "GCP_SERVICE_ACCOUNT JSON is damaged or incomplete. "
+            "Re-copy the key file into Secrets between triple quotes."
+        ) from e
+
+
+def _client():
+    info = _service_account_info()
     creds = Credentials.from_service_account_info(info, scopes=SCOPES)
     return gspread.authorize(creds)
 
 
 def get_worksheet():
+    if "SHEET_ID" not in st.secrets:
+        raise ValueError("Missing SHEET_ID in Streamlit Secrets")
     gc = _client()
     sh = gc.open_by_key(st.secrets["SHEET_ID"])
     ws = sh.sheet1
@@ -135,4 +164,4 @@ def add_pharmacy(
             datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         ],
         value_input_option="USER_ENTERED",
-  )
+    )
