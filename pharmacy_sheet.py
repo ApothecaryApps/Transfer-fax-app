@@ -57,7 +57,9 @@ def _service_account_info():
         ) from e
 
 
+@st.cache_resource(show_spinner=False)
 def _client():
+    # Built once per server process and reused (saves re-authorizing on every search).
     info = _service_account_info()
     creds = Credentials.from_service_account_info(info, scopes=SCOPES)
     return gspread.authorize(creds)
@@ -75,8 +77,14 @@ def get_worksheet():
     return ws
 
 
-def load_pharmacies():
-    ws = get_worksheet()
+# How long the directory stays cached before it is re-read from the Google Sheet.
+CACHE_TTL_SECONDS = 600  # 10 minutes
+
+
+def _read_rows(ws=None):
+    """Fresh (uncached) read of every row in the sheet."""
+    if ws is None:
+        ws = get_worksheet()
     rows = ws.get_all_records()
     out = []
     for r in rows:
@@ -84,8 +92,62 @@ def load_pharmacies():
     return out
 
 
+@st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False)
+def _load_directory():
+    """Cached copy of the sheet plus a small search index.
+
+    Returns (rows, index, state_map):
+      rows      - list of row dicts (same shape load_pharmacies always returned)
+      index     - one tuple per searchable row (has name and fax), in sheet order:
+                  (row_pos, store_lower, city_lower, state_lower, zip_digits, phone_digits, blob_lower)
+      state_map - state_lower -> list of positions in index (in sheet order)
+    """
+    rows = _read_rows()
+    index = []
+    state_map = {}
+    for i, r in enumerate(rows):
+        if not (r.get("name") and r.get("fax")):
+            continue
+        blob = " ".join(
+            [
+                r.get("name") or "",
+                r.get("store_number") or "",
+                r.get("address") or "",
+                r.get("city") or "",
+                r.get("state") or "",
+                r.get("zip") or "",
+                r.get("phone") or "",
+                r.get("fax") or "",
+            ]
+        ).lower()
+        state_l = (r.get("state") or "").lower()
+        state_map.setdefault(state_l, []).append(len(index))
+        index.append(
+            (
+                i,
+                (r.get("store_number") or "").lower(),
+                (r.get("city") or "").lower(),
+                state_l,
+                digits_only(r.get("zip") or ""),
+                digits_only(r.get("phone") or ""),
+                blob,
+            )
+        )
+    return rows, index, state_map
+
+
+def clear_pharmacy_cache():
+    """Forget the cached directory so the next search re-reads the sheet."""
+    _load_directory.clear()
+
+
+def load_pharmacies():
+    rows, _index, _state_map = _load_directory()
+    return rows
+
+
 def search_pharmacies(query: str = "", store_number: str = "", city: str = "", state: str = "", zip_code: str = "", phone: str = ""):
-    rows = load_pharmacies()
+    rows, index, state_map = _load_directory()
     q = (query or "").strip().lower()
     sn = (store_number or "").strip().lower()
     city_q = (city or "").strip().lower()
@@ -93,36 +155,30 @@ def search_pharmacies(query: str = "", store_number: str = "", city: str = "", s
     zip_q = digits_only(zip_code)
     phone_q = digits_only(phone)
 
+    # Narrow by state first (same "contains" rule as before, e.g. "az" matches "AZ").
+    if state_q:
+        keys = [k for k in state_map if state_q in k]
+        if len(keys) == 1:
+            candidates = state_map[keys[0]]
+        else:
+            candidates = sorted(pos for k in keys for pos in state_map[k])
+        entries = (index[pos] for pos in candidates)
+    else:
+        entries = index
+
     hits = []
-    for r in rows:
-        if not (r.get("name") and r.get("fax")):
+    for i, r_sn, r_city, _r_state, r_zip, r_phone, blob in entries:
+        if sn and sn not in r_sn:
             continue
-        if sn and sn not in (r.get("store_number") or "").lower():
+        if city_q and city_q not in r_city:
             continue
-        if city_q and city_q not in (r.get("city") or "").lower():
+        if zip_q and zip_q not in r_zip:
             continue
-        if state_q and state_q not in (r.get("state") or "").lower():
+        if phone_q and phone_q not in r_phone:
             continue
-        if zip_q and zip_q not in digits_only(r.get("zip") or ""):
+        if q and q not in blob:
             continue
-        if phone_q and phone_q not in digits_only(r.get("phone") or ""):
-            continue
-        if q:
-            blob = " ".join(
-                [
-                    r.get("name") or "",
-                    r.get("store_number") or "",
-                    r.get("address") or "",
-                    r.get("city") or "",
-                    r.get("state") or "",
-                    r.get("zip") or "",
-                    r.get("phone") or "",
-                    r.get("fax") or "",
-                ]
-            ).lower()
-            if q not in blob:
-                continue
-        hits.append(r)
+        hits.append(rows[i])
     return hits
 
 
@@ -144,12 +200,13 @@ def add_pharmacy(
     if len(fax) not in (10, 11):
         raise ValueError("Fax should be 10 digits (US)")
 
-    existing = load_pharmacies()
+    # Fresh read (not the cache) so the duplicate check sees rows added in the last few minutes.
+    ws = get_worksheet()
+    existing = _read_rows(ws)
     for r in existing:
         if digits_only(r.get("fax") or "") == fax and (r.get("name") or "").strip().lower() == name.lower():
             raise ValueError("That pharmacy (same name + fax) is already in the list")
 
-    ws = get_worksheet()
     ws.append_row(
         [
             name,
@@ -165,3 +222,5 @@ def add_pharmacy(
         ],
         value_input_option="USER_ENTERED",
     )
+    # New row saved: drop the cached directory so the next search shows it right away.
+    clear_pharmacy_cache()
