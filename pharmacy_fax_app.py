@@ -143,7 +143,13 @@ with st.container(border=True):
     hits = st.session_state.get("pharmacy_hits") or []
     if hits:
         st.markdown("**Results — tap one to load**")
-        for i, p in enumerate(hits):
+        max_shown = 50  # keep the list phone-friendly
+        if len(hits) > max_shown:
+            st.info(
+                f"Showing the first {max_shown} of {len(hits):,} matches. "
+                "Add a name, city, or ZIP to narrow it down."
+            )
+        for i, p in enumerate(hits[:max_shown]):
             detail = " · ".join(
                 x
                 for x in [
