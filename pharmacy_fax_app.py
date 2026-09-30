@@ -9,7 +9,7 @@ from reportlab.lib import colors
 from reportlab.lib.units import inch
 
 from srfax import queue_fax, wait_for_fax
-from pharmacy_sheet import search_pharmacies, add_pharmacy, digits_only
+from pharmacy_sheet import search_pharmacies, add_pharmacy, digits_only, add_feedback
 
 st.set_page_config(page_title="Pharmacy Transfer Fax", layout="wide")
 
@@ -388,4 +388,33 @@ with st.container(border=True):
                     st.error(f"Error: {e}")
 
 st.caption("Directory is a shared Google Sheet. App can add new pharmacies only — no edit/delete.")
+
+
+# ========== SEND FEEDBACK ==========
+def _current_user_email() -> str:
+    for attr in ("user", "experimental_user"):
+        try:
+            email = getattr(st, attr).email
+            if email:
+                return str(email)
+        except Exception:
+            pass
+    return "unknown"
+
+
+with st.expander("💬 Send feedback"):
+    st.warning("Please don't include patient names, DOBs, or Rx details.")
+    with st.form("feedback_form", clear_on_submit=True):
+        fb_category = st.selectbox("Category", ["Bug", "Idea", "Directory fix"])
+        fb_message = st.text_area("Message", max_chars=2000, placeholder="What should we fix or add?")
+        fb_submitted = st.form_submit_button("Send feedback", use_container_width=True)
+    if fb_submitted:
+        if not (fb_message or "").strip():
+            st.error("Please type a message first.")
+        else:
+            try:
+                add_feedback(fb_category, fb_message, user=_current_user_email())
+                st.success("Thank you! Your feedback was sent.")
+            except Exception:
+                st.error("Sorry, your feedback couldn't be saved right now. Please try again in a minute.")
     
