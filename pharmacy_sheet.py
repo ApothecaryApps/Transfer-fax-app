@@ -1,6 +1,6 @@
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import gspread
 import streamlit as st
@@ -224,3 +224,46 @@ def add_pharmacy(
     )
     # New row saved: drop the cached directory so the next search shows it right away.
     clear_pharmacy_cache()
+
+
+# ---------- Feedback box ----------
+# Suggestions go to a separate "Feedback" tab. This never touches Sheet1 or the directory cache.
+FEEDBACK_TAB = "Feedback"
+FEEDBACK_HEADERS = ["timestamp", "user", "category", "message", "status"]
+
+
+def _phoenix_now():
+    try:
+        from zoneinfo import ZoneInfo
+
+        return datetime.now(ZoneInfo("America/Phoenix"))
+    except Exception:
+        # Arizona has no daylight saving time, so UTC-7 is always correct.
+        return datetime.now(timezone(timedelta(hours=-7)))
+
+
+def add_feedback(category: str, message: str, user: str = ""):
+    message = (message or "").strip()
+    if not message:
+        raise ValueError("Please type a message first.")
+    if "SHEET_ID" not in st.secrets:
+        raise ValueError("Missing SHEET_ID in Streamlit Secrets")
+    sh = _client().open_by_key(st.secrets["SHEET_ID"])
+    try:
+        ws = sh.worksheet(FEEDBACK_TAB)
+    except gspread.exceptions.WorksheetNotFound:
+        # Safety net: create the tab (placed after Sheet1) if someone deleted it.
+        ws = sh.add_worksheet(title=FEEDBACK_TAB, rows=1000, cols=len(FEEDBACK_HEADERS), index=1)
+        ws.append_row(FEEDBACK_HEADERS, value_input_option="RAW")
+    ws.append_row(
+        [
+            _phoenix_now().strftime("%Y-%m-%d %H:%M MST"),
+            (user or "unknown").strip() or "unknown",
+            (category or "").strip(),
+            message,
+            "new",
+        ],
+        # RAW = saved exactly as typed (a message starting with "=" is not run as a formula).
+        value_input_option="RAW",
+            )
+    
