@@ -8,10 +8,54 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.lib.units import inch
 
-from srfax import queue_fax, wait_for_fax
+from srfax import queue_fax, wait_for_fax, get_fax_status
 from pharmacy_sheet import search_pharmacies, add_pharmacy, digits_only, add_feedback
+from pharmacy_sheet import (
+    log_fax,
+    update_fax_log,
+    mark_fax_received,
+    read_fax_log,
+    sync_delivery_results,
+    display_status,
+    non_responders,
+)
 
 st.set_page_config(page_title="Pharmacy Transfer Fax", layout="wide")
+
+
+def _current_user_email() -> str:
+    for attr in ("user", "experimental_user"):
+        try:
+            email = getattr(st, attr).email
+            if email:
+                return str(email)
+        except Exception:
+            pass
+    return "unknown"
+
+
+def _safe_log_fax(**kw):
+    """Write to the sent-fax log. Never blocks sending: on error, show a small warning only."""
+    try:
+        return log_fax(sent_by=_current_user_email(), **kw)
+    except Exception:
+        st.caption("⚠️ Couldn't save this fax to the Sent faxes log (the fax itself is not affected).")
+        return None
+
+
+def _safe_update_log(log_id, **kw):
+    if not log_id:
+        return
+    try:
+        update_fax_log(log_id, **kw)
+    except Exception:
+        st.caption("⚠️ Couldn't update the Sent faxes log (the fax itself is not affected).")
+
+
+def _short_reason(err) -> str:
+    # Short, PHI-free reason: error type + first part of the message (never fax content).
+    return f"{type(err).__name__}: {str(err)}"[:120]
+
 
 # --- Dense layout + section card accents ---
 st.markdown(
@@ -360,11 +404,28 @@ with st.container(border=True):
                     )
                     try:
                         with st.spinner("Trying SRFax API send..."):
-                            fax_id = queue_fax(
-                                st.secrets,
-                                recv_fax_number,
-                                pdf_bytes,
-                                filename="transfer.pdf",
+                            try:
+                                fax_id = queue_fax(
+                                    st.secrets,
+                                    recv_fax_number,
+                                    pdf_bytes,
+                                    filename="transfer.pdf",
+                                )
+                            except Exception as queue_err:
+                                _safe_log_fax(
+                                    to_pharmacy=recv_name,
+                                    to_fax=recv_fax_number,
+                                    delivery_result="not sent",
+                                    status="failed",
+                                    note=_short_reason(queue_err),
+                                )
+                                raise
+                            log_id = _safe_log_fax(
+                                to_pharmacy=recv_name,
+                                to_fax=recv_fax_number,
+                                srfax_id=fax_id,
+                                delivery_result="pending",
+                                status="waiting",
                             )
                             st.info(f"Queued with SRFax. Job ID: {fax_id}")
                             result = wait_for_fax(st.secrets, fax_id)
@@ -374,9 +435,13 @@ with st.container(border=True):
                             elif isinstance(result, list) and result:
                                 status = result[0].get("SentStatus")
                             if status == "Sent":
+                                _safe_update_log(log_id, delivery_result="delivered")
                                 st.success(f"✅ Fax successfully sent to {recv_fax_number}!")
                                 st.balloons()
                             elif status == "Failed":
+                                _safe_update_log(
+                                    log_id, delivery_result="failed", status="failed", note="SRFax delivery failed"
+                                )
                                 st.error(f"Fax failed: {result}")
                             else:
                                 st.warning(f"Still in progress / unknown status: {result}")
@@ -387,34 +452,33 @@ with st.container(border=True):
                 except Exception as e:
                     st.error(f"Error: {e}")
 
-st.caption("Directory is a shared Google Sheet. App can add new pharmacies only — no edit/delete.")
-
-
-# ========== SEND FEEDBACK ==========
-def _current_user_email() -> str:
-    for attr in ("user", "experimental_user"):
+# ========== SENT FAXES (no-response tracking) ==========
+with st.container(border=True):
+    st.markdown('<p class="section-label send">Sent faxes</p>', unsafe_allow_html=True)
+    if st.toggle("Show sent faxes & non-responders", key="show_fax_log"):
         try:
-            email = getattr(st, attr).email
-            if email:
-                return str(email)
+            # Ask SRFax about pending deliveries at most every 10 minutes per session.
+            import time as _time
+
+            if _time.time() - st.session_state.get("_fax_sync_at", 0) > 600:
+                st.session_state["_fax_sync_at"] = _time.time()
+                try:
+                    sync_delivery_results(lambda fid: get_fax_status(st.secrets, fid))
+                except Exception:
+                    pass  # delivery check is a bonus; never break the list
+            log_rows = read_fax_log()
         except Exception:
-            pass
-    return "unknown"
+            log_rows = None
+            st.warning("Couldn't load the Sent faxes log right now. Please try again in a minute.")
 
-
-with st.expander("💬 Send feedback"):
-    st.warning("Please don't include patient names, DOBs, or Rx details.")
-    with st.form("feedback_form", clear_on_submit=True):
-        fb_category = st.selectbox("Category", ["Bug", "Idea", "Directory fix"])
-        fb_message = st.text_area("Message", max_chars=2000, placeholder="What should we fix or add?")
-        fb_submitted = st.form_submit_button("Send feedback", use_container_width=True)
-    if fb_submitted:
-        if not (fb_message or "").strip():
-            st.error("Please type a message first.")
-        else:
-            try:
-                add_feedback(fb_category, fb_message, user=_current_user_email())
-                st.success("Thank you! Your feedback was sent.")
-            except Exception:
-                st.error("Sorry, your feedback couldn't be saved right now. Please try again in a minute.")
-    
+        if log_rows is not None:
+            if st.session_state.pop("_flash_received", False):
+                st.success("Marked as received.")
+            recent = list(reversed(log_rows))[:30]
+            if not recent:
+                st.caption("No faxes logged yet.")
+            st.caption("Newest first. 'No response' = still waiting after 3 days.")
+            badge = {
+                "waiting": "⏳ waiting",
+                "no response": "🔴 no response",
+                "receive
