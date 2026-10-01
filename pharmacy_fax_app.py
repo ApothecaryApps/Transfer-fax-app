@@ -9,6 +9,9 @@ from reportlab.lib import colors
 from reportlab.lib.units import inch
 
 from srfax import queue_fax, wait_for_fax, get_fax_status
+import importlib
+import pharmacy_sheet as _ps
+importlib.reload(_ps)  # make sure Streamlit uses the latest pharmacy_sheet.py
 from pharmacy_sheet import search_pharmacies, add_pharmacy, digits_only, add_feedback
 from pharmacy_sheet import (
     log_fax,
