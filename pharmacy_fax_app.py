@@ -481,4 +481,61 @@ with st.container(border=True):
             badge = {
                 "waiting": "⏳ waiting",
                 "no response": "🔴 no response",
-                "receive
+                "received": "✅ received",
+                "failed": "❌ failed",
+            }
+            for r in recent:
+                shown = display_status(r)
+                delivery = r.get("delivery_result") or ""
+                st.markdown(f"**{r.get('to_pharmacy') or '(no name)'}** — {badge.get(shown, shown)}")
+                st.caption(
+                    " · ".join(
+                        x
+                        for x in [
+                            f"Sent {r.get('sent_at')}",
+                            f"Fax {r.get('to_fax')}" if r.get("to_fax") else "",
+                            f"Delivery: {delivery}" if delivery else "",
+                        ]
+                        if x
+                    )
+                )
+                if shown in ("waiting", "no response") and r.get("log_id"):
+                    if st.button("Received", key=f"recv_{r['log_id']}", use_container_width=True):
+                        try:
+                            mark_fax_received(r["log_id"])
+                            st.session_state["_flash_received"] = True
+                            st.rerun()
+                        except Exception:
+                            st.error("Sorry, couldn't update that fax right now. Please try again.")
+
+            st.markdown("**Non-responders**")
+            report = non_responders(log_rows)
+            if report:
+                st.caption(
+                    "Delivery failed = SRFax couldn't deliver (fax number may be wrong). "
+                    "No response = delivered, but nothing back after 3 days."
+                )
+                st.dataframe(report, hide_index=True, use_container_width=True)
+            else:
+                st.caption("No non-responders right now.")
+
+st.caption("Directory is a shared Google Sheet. App can add new pharmacies only — no edit/delete.")
+
+
+# ========== SEND FEEDBACK ==========
+with st.expander("💬 Send feedback"):
+    st.warning("Please don't include patient names, DOBs, or Rx details.")
+    with st.form("feedback_form", clear_on_submit=True):
+        fb_category = st.selectbox("Category", ["Bug", "Idea", "Directory fix"])
+        fb_message = st.text_area("Message", max_chars=2000, placeholder="What should we fix or add?")
+        fb_submitted = st.form_submit_button("Send feedback", use_container_width=True)
+    if fb_submitted:
+        if not (fb_message or "").strip():
+            st.error("Please type a message first.")
+        else:
+            try:
+                add_feedback(fb_category, fb_message, user=_current_user_email())
+                st.success("Thank you! Your feedback was sent.")
+            except Exception:
+                st.error("Sorry, your feedback couldn't be saved right now. Please try again in a minute.")
+    
