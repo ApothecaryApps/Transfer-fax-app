@@ -267,3 +267,206 @@ def add_feedback(category: str, message: str, user: str = ""):
         value_input_option="RAW",
             )
     
+
+
+# ---------- Sent-fax log (no-response tracking) ----------
+# Lives on its own "FaxLog" tab. Never touches Sheet1 or the directory cache.
+# NO patient info is ever written here: only receiving pharmacy, fax number, time, sender, SRFax id/result.
+FAXLOG_TAB = "FaxLog"
+FAXLOG_HEADERS = [
+    "log_id",
+    "sent_at",
+    "sent_by",
+    "to_pharmacy",
+    "to_fax",
+    "srfax_id",
+    "delivery_result",
+    "status",
+    "status_updated_at",
+    "note",
+]
+NO_RESPONSE_DAYS = 3
+_PHX = timezone(timedelta(hours=-7))  # Arizona: no daylight saving time
+
+
+def _faxlog_ws():
+    if "SHEET_ID" not in st.secrets:
+        raise ValueError("Missing SHEET_ID in Streamlit Secrets")
+    sh = _client().open_by_key(st.secrets["SHEET_ID"])
+    try:
+        return sh.worksheet(FAXLOG_TAB)
+    except gspread.exceptions.WorksheetNotFound:
+        # Safety net if the tab was deleted: recreate it after Sheet1.
+        ws = sh.add_worksheet(title=FAXLOG_TAB, rows=1000, cols=len(FAXLOG_HEADERS), index=1)
+        ws.append_row(FAXLOG_HEADERS, value_input_option="RAW")
+        return ws
+
+
+def _phx_stamp():
+    return _phoenix_now().strftime("%Y-%m-%d %H:%M")
+
+
+def _fax10(fax):
+    d = digits_only(fax)
+    return d[-10:] if len(d) == 11 and d.startswith("1") else d
+
+
+def log_fax(to_pharmacy, to_fax, sent_by="", srfax_id="", delivery_result="pending", status="waiting", note=""):
+    """Add one row to FaxLog. Returns the new log_id."""
+    import uuid
+
+    log_id = uuid.uuid4().hex[:8]
+    _faxlog_ws().append_row(
+        [
+            log_id,
+            _phx_stamp(),
+            (sent_by or "unknown").strip() or "unknown",
+            (to_pharmacy or "").strip(),
+            _fax10(to_fax),
+            str(srfax_id or ""),
+            delivery_result,
+            status,
+            _phx_stamp(),
+            (note or "")[:150],
+        ],
+        value_input_option="RAW",
+    )
+    clear_fax_log_cache()
+    return log_id
+
+
+def _row_number(ws, log_id):
+    ids = ws.col_values(1)
+    for i, v in enumerate(ids):
+        if str(v).strip() == str(log_id):
+            return i + 1  # sheet rows are 1-based
+    raise ValueError("That fax is no longer in the log")
+
+
+def _set_cells(ws, row, updates):
+    """updates: {"status": "...", ...} -> written in one call. status_updated_at set automatically."""
+    updates = dict(updates)
+    if "status" in updates:
+        updates["status_updated_at"] = _phx_stamp()
+    data = []
+    for key, val in updates.items():
+        col = chr(ord("A") + FAXLOG_HEADERS.index(key))
+        data.append({"range": f"{col}{row}", "values": [[val]]})
+    ws.batch_update(data, value_input_option="RAW")
+
+
+def update_fax_log(log_id, **updates):
+    ws = _faxlog_ws()
+    _set_cells(ws, _row_number(ws, log_id), updates)
+    clear_fax_log_cache()
+
+
+def mark_fax_received(log_id):
+    update_fax_log(log_id, status="received")
+
+
+def _read_fax_log_fresh(ws=None):
+    ws = ws or _faxlog_ws()
+    out = []
+    for i, r in enumerate(ws.get_all_records()):
+        row = {k: str(r.get(k, "") or "").strip() for k in FAXLOG_HEADERS}
+        row["_row"] = i + 2  # header is row 1
+        out.append(row)
+    return out
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def read_fax_log():
+    return _read_fax_log_fresh()
+
+
+def clear_fax_log_cache():
+    read_fax_log.clear()
+
+
+def _parse_phx(stamp):
+    try:
+        return datetime.strptime(stamp[:16], "%Y-%m-%d %H:%M").replace(tzinfo=_PHX)
+    except Exception:
+        return None
+
+
+def display_status(row, now=None):
+    """What the app shows. 'waiting' older than 3 days shows as 'no response' (the sheet keeps 'waiting')."""
+    status = (row.get("status") or "").lower()
+    if status == "waiting":
+        sent = _parse_phx(row.get("sent_at") or "")
+        now = now or datetime.now(_PHX)
+        if sent and now - sent >= timedelta(days=NO_RESPONSE_DAYS):
+            return "no response"
+    return status or "unknown"
+
+
+def srfax_to_delivery(result):
+    """Map an SRFax Get_FaxStatus result to 'delivered' / 'failed' / None (still in progress)."""
+    if isinstance(result, list):
+        result = result[0] if result else {}
+    sent = (result or {}).get("SentStatus") if isinstance(result, dict) else None
+    if sent == "Sent":
+        return "delivered"
+    if sent == "Failed":
+        return "failed"
+    return None
+
+
+def sync_delivery_results(get_status, max_checks=10, max_age_days=14):
+    """Ask SRFax about 'waiting' rows whose delivery is still pending. Returns how many rows changed.
+
+    get_status(srfax_id) -> SRFax result (the existing srfax.get_fax_status, wrapped).
+    """
+    ws = _faxlog_ws()
+    now = datetime.now(_PHX)
+    changed = checked = 0
+    for row in _read_fax_log_fresh(ws):
+        if checked >= max_checks:
+            break
+        if row["status"].lower() != "waiting" or not row["srfax_id"]:
+            continue
+        if row["delivery_result"].lower() not in ("", "pending"):
+            continue
+        sent = _parse_phx(row["sent_at"])
+        if sent and now - sent > timedelta(days=max_age_days):
+            continue
+        checked += 1
+        try:
+            delivery = srfax_to_delivery(get_status(row["srfax_id"]))
+        except Exception:
+            continue
+        if delivery == "delivered":
+            _set_cells(ws, row["_row"], {"delivery_result": "delivered"})
+            changed += 1
+        elif delivery == "failed":
+            _set_cells(ws, row["_row"], {"delivery_result": "failed", "status": "failed"})
+            changed += 1
+    if changed:
+        clear_fax_log_cache()
+    return changed
+
+
+def non_responders(rows, now=None):
+    """Pharmacies ranked by unanswered faxes, split into delivery-failed vs delivered-but-no-response."""
+    groups = {}
+    for r in rows:
+        delivery = r.get("delivery_result", "").lower()
+        shown = display_status(r, now)
+        failed = delivery == "failed"
+        no_resp = shown == "no response"
+        if not (failed or no_resp):
+            continue
+        key = (r.get("to_pharmacy", ""), r.get("to_fax", ""))
+        g = groups.setdefault(key, {"Pharmacy": key[0], "Fax": key[1], "Delivery failed": 0, "No response": 0})
+        if failed:
+            g["Delivery failed"] += 1
+        else:
+            g["No response"] += 1
+    out = list(groups.values())
+    for g in out:
+        g["Total"] = g["Delivery failed"] + g["No response"]
+    out.sort(key=lambda g: (-g["Total"], -g["Delivery failed"], g["Pharmacy"].lower()))
+    return out
+    
