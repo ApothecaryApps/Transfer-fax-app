@@ -377,6 +377,8 @@ def build_pdf_bytes() -> bytes:
         )
         story.append(t)
 
+    story.append(Spacer(1, 15))
+    story.append(Paragraph("If no refills remain, please call or fax us back.", styles["Normal"]))
     story.append(Spacer(1, 30))
     story.append(
         Paragraph(f"Generated: {datetime.now().strftime('%B %d, %Y %I:%M %p')}", styles["Normal"])
@@ -384,6 +386,17 @@ def build_pdf_bytes() -> bytes:
     doc.build(story)
     buffer.seek(0)
     return buffer.getvalue()
+
+
+def _friendly_status(result, status=None) -> str:
+    """Turn an SRFax status reply into short plain text (never a raw dict)."""
+    item = result[0] if isinstance(result, list) and result else result
+    if isinstance(item, dict):
+        status = item.get("SentStatus") or status
+        reason = (item.get("ErrorCode") or "").strip() if isinstance(item.get("ErrorCode"), str) else ""
+        if reason and status == "Failed":
+            return f"Failed ({reason})"
+    return str(status or "Unknown")
 
 
 # ========== SEND ==========
@@ -445,9 +458,13 @@ with st.container(border=True):
                                 _safe_update_log(
                                     log_id, delivery_result="failed", status="failed", note="SRFax delivery failed"
                                 )
-                                st.error(f"Fax failed: {result}")
-                            else:
-                                st.warning(f"Still in progress / unknown status: {result}")
+                                st.error(f"Fax failed, status: {_friendly_status(result, 'Failed')}")
+                            elif st.session_state.get("_status_shown_for") != fax_id:
+                                st.session_state["_status_shown_for"] = fax_id
+                                st.warning(
+                                    f"Fax still sending, status: {_friendly_status(result, status)}. "
+                                    "Check 'Sent faxes' below in a few minutes."
+                                )
                     except Exception as send_err:
                         st.warning(
                             f"API send didn’t work ({send_err}). Use Download PDF → SRFax portal to send."
@@ -456,8 +473,7 @@ with st.container(border=True):
                     st.error(f"Error: {e}")
 
 # ========== SENT FAXES (no-response tracking) ==========
-with st.container(border=True):
-    st.markdown('<p class="section-label send">Sent faxes</p>', unsafe_allow_html=True)
+with st.expander("📋 Sent faxes", expanded=False):
     if st.toggle("Show sent faxes & non-responders", key="show_fax_log"):
         try:
             # Ask SRFax about pending deliveries at most every 10 minutes per session.
@@ -524,6 +540,29 @@ with st.container(border=True):
 
 st.caption("Directory is a shared Google Sheet. App can add new pharmacies only — no edit/delete.")
 
+
+# Numeric keypad on phones for Phone/Fax fields (display only; values unchanged).
+import streamlit.components.v1 as _components
+
+_components.html(
+    """<script>
+(function(){
+  const doc = window.parent.document;
+  function fix(){
+    doc.querySelectorAll('input[type="text"], input:not([type])').forEach(function(el){
+      const l = (el.getAttribute('aria-label') || '').toLowerCase();
+      if ((l.includes('phone') || l.includes('fax') || l === 'zip') && !l.includes('title')
+          && !l.includes('search text') && el.getAttribute('inputmode') !== 'tel') {
+        el.setAttribute('inputmode', 'tel');
+      }
+    });
+  }
+  fix();
+  new MutationObserver(fix).observe(doc.body, {childList: true, subtree: true});
+})();
+</script>""",
+    height=0,
+)
 
 # ========== SEND FEEDBACK ==========
 with st.expander("💬 Send feedback"):
