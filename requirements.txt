@@ -4,3 +4,4 @@ reportlab
 requests
 gspread
 google-auth
+httpx
