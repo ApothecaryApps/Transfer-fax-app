@@ -26,7 +26,30 @@ from pharmacy_sheet import (
 st.set_page_config(page_title="Pharmacy Transfer Fax", layout="wide")
 
 
+def _auth_configured() -> bool:
+    """True only if the [auth] block exists in Streamlit Secrets."""
+    try:
+        return "auth" in st.secrets
+    except Exception:
+        return False
+
+
+def _is_signed_in() -> bool:
+    try:
+        return bool(getattr(st.user, "is_logged_in", False))
+    except Exception:
+        return False
+
+
 def _current_user_email() -> str:
+    # Google sign-in first (st.user when logged in), then the older fallbacks.
+    try:
+        if _is_signed_in():
+            email = getattr(st.user, "email", None)
+            if email:
+                return str(email)
+    except Exception:
+        pass
     for attr in ("user", "experimental_user"):
         try:
             email = getattr(st, attr).email
@@ -35,6 +58,26 @@ def _current_user_email() -> str:
         except Exception:
             pass
     return "unknown"
+
+
+def _sign_in_box():
+    """Sidebar sign-in / sign-out. Optional for now: the app works either way."""
+    try:
+        with st.sidebar:
+            if not _auth_configured() or not hasattr(st, "login"):
+                return
+            if _is_signed_in():
+                st.caption(f"Signed in as {getattr(st.user, 'email', '') or 'your Google account'}")
+                if st.button("Sign out", key="auth_sign_out"):
+                    st.logout()
+            else:
+                if st.button("Sign in with Google", key="auth_sign_in"):
+                    st.login()
+    except Exception:
+        st.sidebar.caption("Sign-in is unavailable right now. You can still use the app.")
+
+
+_sign_in_box()
 
 
 def _safe_log_fax(**kw):
