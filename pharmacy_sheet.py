@@ -470,3 +470,35 @@ def non_responders(rows, now=None):
     out.sort(key=lambda g: (-g["Total"], -g["Delivery failed"], g["Pharmacy"].lower()))
     return out
     
+
+
+# ---------- Sign-in audit log ----------
+# One row per sign-in session, on its own tab at the END of the spreadsheet.
+# Never touches Sheet1, Feedback or FaxLog.
+SIGNINLOG_TAB = "SignInLog"
+SIGNINLOG_HEADERS = ["timestamp_phoenix", "email", "name"]
+
+
+def log_sign_in(email: str, name: str = ""):
+    if "SHEET_ID" not in st.secrets:
+        raise ValueError("Missing SHEET_ID in Streamlit Secrets")
+    sh = _client().open_by_key(st.secrets["SHEET_ID"])
+    try:
+        ws = sh.worksheet(SIGNINLOG_TAB)
+    except gspread.exceptions.WorksheetNotFound:
+        # Create it after all existing tabs.
+        ws = sh.add_worksheet(
+            title=SIGNINLOG_TAB,
+            rows=1000,
+            cols=len(SIGNINLOG_HEADERS),
+            index=len(sh.worksheets()),
+        )
+        ws.append_row(SIGNINLOG_HEADERS, value_input_option="RAW")
+    ws.append_row(
+        [
+            _phoenix_now().strftime("%Y-%m-%d %H:%M:%S"),
+            (email or "").strip(),
+            (name or "").strip(),
+        ],
+        value_input_option="RAW",
+    )

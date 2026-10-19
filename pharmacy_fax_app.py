@@ -13,6 +13,7 @@ import importlib
 import pharmacy_sheet as _ps
 importlib.reload(_ps)  # make sure Streamlit uses the latest pharmacy_sheet.py
 from pharmacy_sheet import search_pharmacies, add_pharmacy, digits_only, add_feedback
+from pharmacy_sheet import log_sign_in
 from pharmacy_sheet import (
     log_fax,
     update_fax_log,
@@ -78,6 +79,26 @@ def _sign_in_box():
 
 
 _sign_in_box()
+
+
+def _log_sign_in_once():
+    """Write one SignInLog row per signed-in session (not on every rerun). Never breaks the app."""
+    try:
+        if not _is_signed_in():
+            return
+        email = str(getattr(st.user, "email", "") or "").strip()
+        if not email:
+            return
+        flag = f"_signin_logged_{email.lower()}"
+        if st.session_state.get(flag):
+            return
+        st.session_state[flag] = True  # set first so a Sheet error can't cause repeat tries each rerun
+        log_sign_in(email, str(getattr(st.user, "name", "") or ""))
+    except Exception:
+        pass
+
+
+_log_sign_in_once()
 
 
 def _safe_log_fax(**kw):
