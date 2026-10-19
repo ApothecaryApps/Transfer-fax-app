@@ -151,15 +151,18 @@ div[data-testid="stCaptionContainer"] p { margin-bottom: 0.15rem; }
   font-weight: 700;
   font-size: 1.05rem;
   margin: 0 0 0.35rem 0;
-  padding-left: 0.55rem;
-  border-left: 4px solid #64748b;
+  padding: 0.3rem 0.65rem;
+  border-radius: 6px;
+  background: #475569;
+  color: #ffffff !important;
   line-height: 1.3;
 }
-.section-label.req { border-left-color: #0d9488; color: #0f766e; }
-.section-label.recv { border-left-color: #6366f1; color: #4338ca; }
-.section-label.patient { border-left-color: #16a34a; color: #15803d; }
-.section-label.rx { border-left-color: #d97706; color: #b45309; }
-.section-label.send { border-left-color: #334155; color: #1e293b; }
+/* Colored band, white text (readable in light and dark theme) */
+.section-label.req { background: #0f766e; }
+.section-label.recv { background: #4338ca; }
+.section-label.patient { background: #15803d; }
+.section-label.rx { background: #b45309; }
+.section-label.send { background: #1e293b; }
 /* Soft left border on bordered containers via parent wrapper */
 div[data-testid="stVerticalBlockBorderWrapper"] {
   border-radius: 8px !important;
@@ -181,6 +184,24 @@ if "rx_list" not in st.session_state:
     st.session_state.rx_list = ["Testing fax, give this to Craig", "Thank you!"]
 if "pharmacy_hits" not in st.session_state:
     st.session_state.pharmacy_hits = []
+
+# After a successful send, clear patient/Rx/receiving fields BEFORE widgets are created.
+if "pat_name" not in st.session_state:
+    st.session_state.pat_name = "Jane A. Smith"
+if "pat_dob" not in st.session_state:
+    st.session_state.pat_dob = "01/15/1985"
+if st.session_state.pop("_clear_after_send", False):
+    st.session_state.pat_name = ""
+    st.session_state.pat_dob = ""
+    for _k in [k for k in st.session_state.keys() if str(k).startswith("rx_") and k != "rx_list"]:
+        del st.session_state[_k]
+    st.session_state.rx_list = [""]
+    st.session_state.recv_name = ""
+    st.session_state.recv_fax = ""
+    st.session_state.pharmacy_hits = []
+    st.session_state.pop("_pending_recv_name", None)
+    st.session_state.pop("_pending_recv_fax", None)
+_flash_sent = st.session_state.pop("_flash_sent", "")
 
 # Apply deferred receiving-pharmacy fill BEFORE recv_* widgets are created.
 if "_pending_recv_name" in st.session_state:
@@ -377,9 +398,9 @@ with st.container(border=True):
     st.caption("Keep real patient details in the app only — don’t paste them into chat.")
     p1, p2 = st.columns(2)
     with p1:
-        pat_name = st.text_input("Patient Full Name", "Jane A. Smith")
+        pat_name = st.text_input("Patient Full Name", key="pat_name")
     with p2:
-        pat_dob = st.text_input("Date of Birth", "01/15/1985")
+        pat_dob = st.text_input("Date of Birth", key="pat_dob", placeholder="MM/DD/YYYY")
 
 # ========== PRESCRIPTIONS ==========
 with st.container(border=True):
@@ -466,6 +487,9 @@ def _friendly_status(result, status=None) -> str:
 # ========== SEND ==========
 with st.container(border=True):
     st.markdown('<p class="section-label send">Send fax</p>', unsafe_allow_html=True)
+    if _flash_sent:
+        st.success(f"✅ {_flash_sent} Form cleared for the next request.")
+    _sent_ok = False
     if st.button("📠 Generate PDF & Send Fax", type="primary", use_container_width=True):
         if not (recv_name or "").strip():
             st.error("Please enter receiving pharmacy name")
@@ -518,6 +542,8 @@ with st.container(border=True):
                                 _safe_update_log(log_id, delivery_result="delivered")
                                 st.success(f"✅ Fax successfully sent to {recv_fax_number}!")
                                 st.balloons()
+                                _sent_ok = True
+                                st.session_state["_flash_sent"] = f"Fax sent to {recv_fax_number}."
                             elif status == "Failed":
                                 _safe_update_log(
                                     log_id, delivery_result="failed", status="failed", note="SRFax delivery failed"
@@ -529,12 +555,22 @@ with st.container(border=True):
                                     f"Fax still sending, status: {_friendly_status(result, status)}. "
                                     "Check 'Sent faxes' below in a few minutes."
                                 )
+                                # SRFax accepted it (not failed), so treat as sent and clear the form.
+                                _sent_ok = True
+                                st.session_state["_flash_sent"] = (
+                                    f"Fax accepted by SRFax for {recv_fax_number}; still sending — check Sent faxes below."
+                                )
                     except Exception as send_err:
                         st.warning(
                             f"API send didn’t work ({send_err}). Use Download PDF → SRFax portal to send."
                         )
                 except Exception as e:
                     st.error(f"Error: {e}")
+    if _sent_ok:
+        st.session_state["_clear_after_send"] = True
+        import time as _t
+        _t.sleep(1.5)  # let the success/balloons show briefly
+        st.rerun()
 
 # ========== SENT FAXES (no-response tracking) ==========
 with st.expander("📋 Sent faxes", expanded=False):
@@ -605,7 +641,7 @@ with st.expander("📋 Sent faxes", expanded=False):
 st.caption("Directory is a shared Google Sheet. App can add new pharmacies only — no edit/delete.")
 
 
-# Numeric keypad on phones for Phone/Fax fields (display only; values unchanged).
+# Numeric keypad on phones for number fields (display only; values unchanged).
 import streamlit.components.v1 as _components
 
 _components.html(
@@ -615,9 +651,15 @@ _components.html(
   function fix(){
     doc.querySelectorAll('input[type="text"], input:not([type])').forEach(function(el){
       const l = (el.getAttribute('aria-label') || '').toLowerCase();
-      if ((l.includes('phone') || l.includes('fax') || l === 'zip') && !l.includes('title')
-          && !l.includes('search text') && el.getAttribute('inputmode') !== 'tel') {
-        el.setAttribute('inputmode', 'tel');
+      let mode = null;
+      if ((l.includes('phone') || l.includes('fax') || l === 'zip' || l.includes('date of birth'))
+          && !l.includes('title') && !l.includes('search text')) {
+        mode = 'tel';  // tel keypad also has / and - for dates
+      } else if (l.startsWith('store #') || l.includes('rx number') || l.includes('quantity')) {
+        mode = 'numeric';
+      }
+      if (mode && el.getAttribute('inputmode') !== mode) {
+        el.setAttribute('inputmode', mode);
       }
     });
   }
