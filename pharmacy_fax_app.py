@@ -8,7 +8,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.lib.units import inch
 
-from srfax import queue_fax, wait_for_fax, get_fax_status
+from srfax import queue_fax, wait_for_fax, get_fax_status, retrieve_sent_fax_pdf, delete_sent_faxes
 import importlib
 import pharmacy_sheet as _ps
 importlib.reload(_ps)  # make sure Streamlit uses the latest pharmacy_sheet.py
@@ -22,6 +22,9 @@ from pharmacy_sheet import (
     sync_delivery_results,
     display_status,
     non_responders,
+    record_resend,
+    cleanup_old_faxes,
+    is_deleted,
 )
 
 st.set_page_config(page_title="Pharmacy Transfer Fax", layout="wide")
@@ -120,8 +123,32 @@ def _safe_update_log(log_id, **kw):
 
 
 def _short_reason(err) -> str:
-    # Short, PHI-free reason: error type + first part of the message (never fax content).
-    return f"{type(err).__name__}: {str(err)}"[:120]
+    """Fixed, PHI-free label for an error (raw error text is never shown or saved)."""
+    try:
+        import requests as _rq
+
+        if isinstance(err, (_rq.exceptions.ConnectionError, _rq.exceptions.Timeout)):
+            return "Network error"
+        if isinstance(err, _rq.exceptions.RequestException):
+            return "SRFax error"
+    except Exception:
+        pass
+    if isinstance(err, ValueError):
+        return "Fax number error"
+    return "SRFax error"
+
+
+def _auto_delete_once():
+    """Once per session: delete SRFax copies 7+ days after the last send. Never breaks the app."""
+    if st.session_state.get("_cleanup_done"):
+        return
+    st.session_state["_cleanup_done"] = True
+    try:
+        if "SRFAX_ACCESS_ID" not in st.secrets:
+            return
+        cleanup_old_faxes(lambda ids: delete_sent_faxes(st.secrets, ids))
+    except Exception:
+        pass
 
 
 # --- Dense layout + section card accents ---
@@ -173,7 +200,7 @@ div[data-testid="stVerticalBlockBorderWrapper"] {
 )
 
 st.title("🧾 Pharmacy Prescription Transfer Fax Generator")
-st.markdown("**Live with SRFax** — PDF download + API send working")
+st.markdown("**Live with SRFax**")
 
 # ---------- Session defaults ----------
 if "add_open" not in st.session_state:
@@ -181,15 +208,15 @@ if "add_open" not in st.session_state:
 if "add_prefill" not in st.session_state:
     st.session_state.add_prefill = {}
 if "rx_list" not in st.session_state:
-    st.session_state.rx_list = ["Testing fax, give this to Craig", "Thank you!"]
+    st.session_state.rx_list = [""]
 if "pharmacy_hits" not in st.session_state:
     st.session_state.pharmacy_hits = []
 
-# After a successful send, clear patient/Rx/receiving fields BEFORE widgets are created.
+# After any send attempt, clear patient/Rx/receiving fields BEFORE widgets are created.
 if "pat_name" not in st.session_state:
-    st.session_state.pat_name = "Jane A. Smith"
+    st.session_state.pat_name = ""
 if "pat_dob" not in st.session_state:
-    st.session_state.pat_dob = "01/15/1985"
+    st.session_state.pat_dob = ""
 if st.session_state.pop("_clear_after_send", False):
     st.session_state.pat_name = ""
     st.session_state.pat_dob = ""
@@ -202,6 +229,8 @@ if st.session_state.pop("_clear_after_send", False):
     st.session_state.pop("_pending_recv_name", None)
     st.session_state.pop("_pending_recv_fax", None)
 _flash_sent = st.session_state.pop("_flash_sent", "")
+_flash_fail = st.session_state.pop("_flash_fail", "")
+_auto_delete_once()
 
 # Apply deferred receiving-pharmacy fill BEFORE recv_* widgets are created.
 if "_pending_recv_name" in st.session_state:
@@ -270,7 +299,7 @@ with st.container(border=True):
             if not st.session_state.pharmacy_hits:
                 st.warning("No matches. Add the pharmacy below, or clear filters and try again.")
         except Exception as e:
-            st.error(f"Search error: {e}")
+            st.error("Search error. Please try again in a minute.")
 
     hits = st.session_state.get("pharmacy_hits") or []
     if hits:
@@ -489,87 +518,76 @@ with st.container(border=True):
     st.markdown('<p class="section-label send">Send fax</p>', unsafe_allow_html=True)
     if _flash_sent:
         st.success(f"✅ {_flash_sent} Form cleared for the next request.")
-    _sent_ok = False
+    if _flash_fail:
+        st.error(f"❌ {_flash_fail} Form cleared — please re-enter and try again.")
+    _attempted = False
     if st.button("📠 Generate PDF & Send Fax", type="primary", use_container_width=True):
         if not (recv_name or "").strip():
             st.error("Please enter receiving pharmacy name")
         elif not (recv_fax_number or "").strip():
             st.error("Please enter receiving fax number")
         else:
-            with st.spinner("Generating PDF..."):
-                try:
+            _attempted = True
+            pdf_bytes = None
+            try:
+                with st.spinner("Generating PDF..."):
                     pdf_bytes = build_pdf_bytes()
-                    st.success(f"PDF generated ({len(pdf_bytes)} bytes)")
-                    st.download_button(
-                        "Download PDF (use with SRFax portal)",
-                        data=pdf_bytes,
-                        file_name="transfer.pdf",
-                        mime="application/pdf",
-                    )
-                    try:
-                        with st.spinner("Trying SRFax API send..."):
-                            try:
-                                fax_id = queue_fax(
-                                    st.secrets,
-                                    recv_fax_number,
-                                    pdf_bytes,
-                                    filename="transfer.pdf",
-                                )
-                            except Exception as queue_err:
-                                _safe_log_fax(
-                                    to_pharmacy=recv_name,
-                                    to_fax=recv_fax_number,
-                                    delivery_result="not sent",
-                                    status="failed",
-                                    note=_short_reason(queue_err),
-                                )
-                                raise
-                            log_id = _safe_log_fax(
+            except Exception:
+                st.session_state["_flash_fail"] = "PDF error — fax not sent."
+            if pdf_bytes is not None:
+                try:
+                    with st.spinner("Sending with SRFax..."):
+                        try:
+                            fax_id = queue_fax(st.secrets, recv_fax_number, pdf_bytes, filename="transfer.pdf")
+                        except Exception as queue_err:
+                            _safe_log_fax(
                                 to_pharmacy=recv_name,
                                 to_fax=recv_fax_number,
-                                srfax_id=fax_id,
-                                delivery_result="pending",
-                                status="waiting",
+                                delivery_result="not sent",
+                                status="failed",
+                                note=_short_reason(queue_err),
                             )
-                            st.info(f"Queued with SRFax. Job ID: {fax_id}")
-                            result = wait_for_fax(st.secrets, fax_id)
-                            status = None
-                            if isinstance(result, dict):
-                                status = result.get("SentStatus")
-                            elif isinstance(result, list) and result:
-                                status = result[0].get("SentStatus")
-                            if status == "Sent":
-                                _safe_update_log(log_id, delivery_result="delivered")
-                                st.success(f"✅ Fax successfully sent to {recv_fax_number}!")
-                                st.balloons()
-                                _sent_ok = True
-                                st.session_state["_flash_sent"] = f"Fax sent to {recv_fax_number}."
-                            elif status == "Failed":
-                                _safe_update_log(
-                                    log_id, delivery_result="failed", status="failed", note="SRFax delivery failed"
-                                )
-                                st.error(f"Fax failed, status: {_friendly_status(result, 'Failed')}")
-                            elif st.session_state.get("_status_shown_for") != fax_id:
-                                st.session_state["_status_shown_for"] = fax_id
-                                st.warning(
-                                    f"Fax still sending, status: {_friendly_status(result, status)}. "
-                                    "Check 'Sent faxes' below in a few minutes."
-                                )
-                                # SRFax accepted it (not failed), so treat as sent and clear the form.
-                                _sent_ok = True
-                                st.session_state["_flash_sent"] = (
-                                    f"Fax accepted by SRFax for {recv_fax_number}; still sending — check Sent faxes below."
-                                )
-                    except Exception as send_err:
-                        st.warning(
-                            f"API send didn’t work ({send_err}). Use Download PDF → SRFax portal to send."
+                            raise
+                        finally:
+                            pdf_bytes = None  # drop the PDF from memory right after the send attempt
+                        log_id = _safe_log_fax(
+                            to_pharmacy=recv_name,
+                            to_fax=recv_fax_number,
+                            srfax_id=fax_id,
+                            delivery_result="pending",
+                            status="waiting",
                         )
-                except Exception as e:
-                    st.error(f"Error: {e}")
-    if _sent_ok:
+                        st.info(f"Queued with SRFax. Job ID: {fax_id}")
+                        result = wait_for_fax(st.secrets, fax_id)
+                        status = None
+                        if isinstance(result, dict):
+                            status = result.get("SentStatus")
+                        elif isinstance(result, list) and result:
+                            status = result[0].get("SentStatus")
+                        if status == "Sent":
+                            _safe_update_log(log_id, delivery_result="delivered")
+                            st.success(f"✅ Fax successfully sent to {recv_fax_number}!")
+                            st.balloons()
+                            st.session_state["_flash_sent"] = f"Fax sent to {recv_fax_number}."
+                        elif status == "Failed":
+                            _safe_update_log(
+                                log_id, delivery_result="failed", status="failed", note="SRFax delivery failed"
+                            )
+                            st.session_state["_flash_fail"] = (
+                                f"Fax to {recv_fax_number} failed ({_friendly_status(result, 'Failed')})."
+                            )
+                        else:
+                            st.session_state["_flash_sent"] = (
+                                f"Fax accepted by SRFax for {recv_fax_number}; still sending — check Sent faxes below."
+                            )
+                except Exception as send_err:
+                    st.session_state["_flash_fail"] = f"{_short_reason(send_err)} — fax not sent."
+            pdf_bytes = None
+    if _attempted:
         st.session_state["_clear_after_send"] = True
         import time as _t
-        _t.sleep(1.5)  # let the success/balloons show briefly
+
+        _t.sleep(1.5)  # let the message show briefly
         st.rerun()
 
 # ========== SENT FAXES (no-response tracking) ==========
@@ -593,6 +611,12 @@ with st.expander("📋 Sent faxes", expanded=False):
         if log_rows is not None:
             if st.session_state.pop("_flash_received", False):
                 st.success("Marked as received.")
+            _m = st.session_state.pop("_flash_resent", "")
+            if _m:
+                st.success(_m)
+            _m = st.session_state.pop("_flash_resent_fail", "")
+            if _m:
+                st.error(_m)
             recent = list(reversed(log_rows))[:30]
             if not recent:
                 st.caption("No faxes logged yet.")
@@ -618,10 +642,43 @@ with st.expander("📋 Sent faxes", expanded=False):
                         if x
                     )
                 )
-                if shown in ("waiting", "no response") and r.get("log_id"):
-                    if st.button("Received", key=f"recv_{r['log_id']}", use_container_width=True):
+                lid = r.get("log_id")
+                if r.get("resend_count") not in (None, "", "0"):
+                    st.caption(f"Resent {r.get('resend_count')}× · last sent {r.get('last_sent_at')}")
+                if shown != "received" and lid:
+                    if is_deleted(r):
+                        st.caption("Resend: expired (fax copy deleted from SRFax after 7 days)")
+                    elif r.get("srfax_id"):
+                        if st.session_state.get("_confirm_resend") == lid:
+                            st.warning(f"Resend this fax to {r.get('to_fax')}?")
+                            c1, c2 = st.columns(2)
+                            if c1.button("Yes, resend", key=f"resend_yes_{lid}", type="primary", use_container_width=True):
+                                st.session_state.pop("_confirm_resend", None)
+                                try:
+                                    with st.spinner("Resending with SRFax..."):
+                                        _pdf = retrieve_sent_fax_pdf(st.secrets, r["srfax_id"])
+                                        try:
+                                            new_id = queue_fax(st.secrets, r.get("to_fax") or "", _pdf, filename="transfer.pdf")
+                                        finally:
+                                            _pdf = None  # memory only, dropped right away
+                                    try:
+                                        record_resend(lid, new_id)
+                                    except Exception:
+                                        pass
+                                    st.session_state["_flash_resent"] = "Resent. Delivery status will update in a few minutes."
+                                except Exception as rs_err:
+                                    st.session_state["_flash_resent_fail"] = f"{_short_reason(rs_err)} — not resent."
+                                st.rerun()
+                            if c2.button("Cancel", key=f"resend_no_{lid}", use_container_width=True):
+                                st.session_state.pop("_confirm_resend", None)
+                                st.rerun()
+                        elif st.button("Resend", key=f"resend_{lid}", use_container_width=True):
+                            st.session_state["_confirm_resend"] = lid
+                            st.rerun()
+                if shown in ("waiting", "no response") and lid:
+                    if st.button("Received", key=f"recv_{lid}", use_container_width=True):
                         try:
-                            mark_fax_received(r["log_id"])
+                            mark_fax_received(lid)
                             st.session_state["_flash_received"] = True
                             st.rerun()
                         except Exception:

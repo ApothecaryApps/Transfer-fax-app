@@ -284,8 +284,16 @@ FAXLOG_HEADERS = [
     "status",
     "status_updated_at",
     "note",
+    # Added at the END (Oct 2026): resend + auto-delete tracking. Existing columns unchanged.
+    "last_sent_at",
+    "resend_count",
+    "deleted_at",
+    "prior_srfax_ids",
 ]
+_FAXLOG_BASE = 10  # first 10 columns are the original ones
 NO_RESPONSE_DAYS = 3
+DELETE_AFTER_DAYS = 7
+_faxlog_header_ok = False
 _PHX = timezone(timedelta(hours=-7))  # Arizona: no daylight saving time
 
 
@@ -294,12 +302,28 @@ def _faxlog_ws():
         raise ValueError("Missing SHEET_ID in Streamlit Secrets")
     sh = _client().open_by_key(st.secrets["SHEET_ID"])
     try:
-        return sh.worksheet(FAXLOG_TAB)
+        ws = sh.worksheet(FAXLOG_TAB)
+        _ensure_faxlog_header(ws)
+        return ws
     except gspread.exceptions.WorksheetNotFound:
         # Safety net if the tab was deleted: recreate it after Sheet1.
         ws = sh.add_worksheet(title=FAXLOG_TAB, rows=1000, cols=len(FAXLOG_HEADERS), index=1)
         ws.append_row(FAXLOG_HEADERS, value_input_option="RAW")
         return ws
+
+
+def _ensure_faxlog_header(ws):
+    """Add the new header names after 'note' (K1..N1) if missing. Never rewrites existing headers."""
+    global _faxlog_header_ok
+    if _faxlog_header_ok:
+        return
+    head = [h.strip() for h in ws.row_values(1)]
+    if head[:_FAXLOG_BASE] == FAXLOG_HEADERS[:_FAXLOG_BASE] and head != FAXLOG_HEADERS:
+        missing = FAXLOG_HEADERS[len(head):] if head == FAXLOG_HEADERS[: len(head)] else []
+        if missing:
+            start = chr(ord("A") + len(head))
+            ws.update(range_name=f"{start}1", values=[missing], value_input_option="RAW")
+    _faxlog_header_ok = True
 
 
 def _phx_stamp():
@@ -328,11 +352,77 @@ def log_fax(to_pharmacy, to_fax, sent_by="", srfax_id="", delivery_result="pendi
             status,
             _phx_stamp(),
             (note or "")[:150],
+            _phx_stamp() if srfax_id else "",
+            "0",
+            "",
+            "",
         ],
         value_input_option="RAW",
     )
     clear_fax_log_cache()
     return log_id
+
+
+def record_resend(log_id, new_srfax_id):
+    """Same log row: new SRFax id becomes current, old id kept for later deletion, count +1."""
+    ws = _faxlog_ws()
+    row = _row_number(ws, log_id)
+    cur = {r["log_id"]: r for r in _read_fax_log_fresh(ws)}.get(str(log_id), {})
+    prior = [x for x in (cur.get("prior_srfax_ids") or "").split(";") if x]
+    if cur.get("srfax_id"):
+        prior.append(cur["srfax_id"])
+    try:
+        count = int(cur.get("resend_count") or 0) + 1
+    except ValueError:
+        count = 1
+    _set_cells(
+        ws,
+        row,
+        {
+            "srfax_id": str(new_srfax_id),
+            "prior_srfax_ids": ";".join(prior),
+            "resend_count": str(count),
+            "last_sent_at": _phx_stamp(),
+            "delivery_result": "pending",
+            "status": "waiting",
+            "note": "",
+        },
+    )
+    clear_fax_log_cache()
+
+
+def is_deleted(row):
+    return bool((row.get("deleted_at") or "").strip())
+
+
+def cleanup_old_faxes(delete_fn, days=DELETE_AFTER_DAYS, max_rows=10, now=None):
+    """Delete SRFax copies 7+ days after the LAST send, then set deleted_at. Returns rows cleaned.
+
+    delete_fn(list_of_srfax_ids) -> raises on failure (srfax.delete_sent_faxes, wrapped).
+    """
+    ws = _faxlog_ws()
+    now = now or datetime.now(_PHX)
+    done = 0
+    for row in _read_fax_log_fresh(ws):
+        if done >= max_rows:
+            break
+        if is_deleted(row):
+            continue
+        last = _parse_phx(row.get("last_sent_at") or "") or _parse_phx(row.get("sent_at") or "")
+        if not last or now - last < timedelta(days=days):
+            continue
+        ids = [row.get("srfax_id") or ""] + (row.get("prior_srfax_ids") or "").split(";")
+        ids = [i for i in ids if i.strip()]
+        try:
+            if ids:
+                delete_fn(ids)
+        except Exception:
+            continue  # try again next session
+        _set_cells(ws, row["_row"], {"deleted_at": _phx_stamp()})
+        done += 1
+    if done:
+        clear_fax_log_cache()
+    return done
 
 
 def _row_number(ws, log_id):
@@ -426,6 +516,8 @@ def sync_delivery_results(get_status, max_checks=10, max_age_days=14):
         if checked >= max_checks:
             break
         if row["status"].lower() != "waiting" or not row["srfax_id"]:
+            continue
+        if is_deleted(row):
             continue
         if row["delivery_result"].lower() not in ("", "pending"):
             continue

@@ -19,7 +19,7 @@ def queue_fax(secrets, to_fax_number: str, pdf_bytes: bytes, filename: str = "tr
     if len(to_digits) == 10:
         to_digits = "1" + to_digits
     if len(to_digits) != 11:
-        raise ValueError(f"Need 11-digit destination fax, got {to_digits!r}")
+        raise ValueError("Need 11-digit destination fax")
 
     creds = _srfax_creds(secrets)
     payload = {
@@ -38,7 +38,7 @@ def queue_fax(secrets, to_fax_number: str, pdf_bytes: bytes, filename: str = "tr
     r.raise_for_status()
     data = r.json()
     if data.get("Status") != "Success":
-        raise RuntimeError(f"Queue_Fax failed: {data}")
+        raise RuntimeError("Queue_Fax failed")
     return str(data["Result"])
 
 
@@ -55,7 +55,7 @@ def get_fax_status(secrets, fax_details_id: str):
     r.raise_for_status()
     data = r.json()
     if data.get("Status") != "Success":
-        raise RuntimeError(f"Get_FaxStatus failed: {data}")
+        raise RuntimeError("Get_FaxStatus failed")
     return data["Result"]
 
 
@@ -71,3 +71,45 @@ def wait_for_fax(secrets, fax_details_id: str, timeout_sec: int = 300, poll_ever
             return last
         time.sleep(poll_every)
     return last
+
+
+def retrieve_sent_fax_pdf(secrets, fax_details_id: str) -> bytes:
+    """Retrieve_Fax (sDirection=OUT, PDF). Returns the PDF bytes in memory only; never saved."""
+    creds = _srfax_creds(secrets)
+    payload = {
+        "action": "Retrieve_Fax",
+        "access_id": creds["access_id"],
+        "access_pwd": creds["access_pwd"],
+        "sFaxDetailsID": str(fax_details_id),
+        "sDirection": "OUT",
+        "sFaxFormat": "PDF",
+        "sResponseFormat": "JSON",
+    }
+    r = requests.post(SRFAX_URL, data=payload, timeout=60)
+    r.raise_for_status()
+    data = r.json()
+    if data.get("Status") != "Success":
+        raise RuntimeError("Retrieve_Fax failed")
+    return base64.b64decode(data["Result"])
+
+
+def delete_sent_faxes(secrets, fax_details_ids) -> None:
+    """Delete_Fax (sDirection=OUT) for one or more sFaxDetailsIDs."""
+    ids = [str(i).strip() for i in fax_details_ids if str(i).strip()]
+    if not ids:
+        return
+    creds = _srfax_creds(secrets)
+    payload = {
+        "action": "Delete_Fax",
+        "access_id": creds["access_id"],
+        "access_pwd": creds["access_pwd"],
+        "sDirection": "OUT",
+        "sResponseFormat": "JSON",
+    }
+    for n, i in enumerate(ids, 1):
+        payload[f"sFaxDetailsID_{n}"] = i
+    r = requests.post(SRFAX_URL, data=payload, timeout=60)
+    r.raise_for_status()
+    data = r.json()
+    if data.get("Status") != "Success":
+        raise RuntimeError("Delete_Fax failed")
