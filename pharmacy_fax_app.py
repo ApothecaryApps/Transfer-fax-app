@@ -38,6 +38,14 @@ def _auth_configured() -> bool:
         return False
 
 
+def _auth0_configured() -> bool:
+    """True when the [auth.auth0] block (email-code sign-in) is in Streamlit secrets."""
+    try:
+        return "auth0" in st.secrets["auth"]
+    except Exception:
+        return False
+
+
 def _is_signed_in() -> bool:
     try:
         return bool(getattr(st.user, "is_logged_in", False))
@@ -71,12 +79,16 @@ def _sign_in_box():
             if not _auth_configured() or not hasattr(st, "login"):
                 return
             if _is_signed_in():
-                st.caption(f"Signed in as {getattr(st.user, 'email', '') or 'your Google account'}")
+                st.caption(f"Signed in as {getattr(st.user, 'email', '') or 'your account'}")
                 if st.button("Sign out", key="auth_sign_out"):
                     st.logout()
             else:
                 if st.button("Sign in with Google", key="auth_sign_in"):
                     st.login()
+                if _auth0_configured():
+                    st.caption("No Gmail? Use your work or other email. We'll email you a code.")
+                    if st.button("Sign in with email code", key="auth0_sign_in"):
+                        st.login("auth0")
     except Exception:
         st.sidebar.caption("Sign-in is unavailable right now. You can still use the app.")
 
