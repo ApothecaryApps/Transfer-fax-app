@@ -89,36 +89,79 @@ def _a0_authorize_url() -> str:
     return _a0_metadata(cfg["metadata"])["authorization_endpoint"] + "?" + urlencode(q)
 
 
+@st.cache_resource(show_spinner=False)
+def _a0_code_cache() -> dict:
+    """Server-wide memo of finished code exchanges (code hash -> user). A code can only be
+    redeemed once at Auth0, but Streamlit may run the callback URL in more than one session
+    (reload, websocket reconnect, iframe re-mount). Reusing the result avoids invalid_grant."""
+    return {}
+
+
 def _a0_handle_callback():
     """If Auth0 just redirected back with ?code&state, finish sign-in into session_state."""
-    import time
+    import time, hashlib
     qp = st.query_params
     code, state = qp.get("code"), qp.get("state")
+    err = qp.get("error")
+    if err and state and not code:
+        st.query_params.clear()
+        st.sidebar.warning(f"Email-code sign-in didn't finish ({err}). Please try again.")
+        return
     if not code or not state:
         return
+    st.query_params.clear()
+    if _a0_user():
+        return
+    cache = _a0_code_cache()
+    key = hashlib.sha256(code.encode()).hexdigest()
+    now = time.time()
+    for k in [k for k, v in cache.items() if now - v[0] > 900]:
+        cache.pop(k, None)
+    if key in cache:
+        st.session_state["_a0_user"] = dict(cache[key][1])
+        return
+    step = "config"
     try:
-        st.query_params.clear()
         cfg = _a0_cfg()
+        step = "state"
         ts, nonce, sig = state.split(".", 2)
-        if _a0_sign(f"{ts}.{nonce}", cfg["client_secret"]) != sig or time.time() - int(ts) > 900:
-            raise ValueError("bad state")
+        import hmac
+        if not hmac.compare_digest(_a0_sign(f"{ts}.{nonce}", cfg["client_secret"]), sig) \
+                or now - int(ts) > 1800:
+            raise ValueError("state")
         import requests as _rq
         md = _a0_metadata(cfg["metadata"])
-        tok = _rq.post(md["token_endpoint"], data={
+        step = "token"
+        r = _rq.post(md["token_endpoint"], data={
             "grant_type": "authorization_code",
             "code": code,
             "redirect_uri": cfg["redirect"],
             "client_id": cfg["client_id"],
             "client_secret": cfg["client_secret"],
-        }, timeout=10).json()
-        info = _rq.get(md["userinfo_endpoint"], headers={
-            "Authorization": f"Bearer {tok['access_token']}"}, timeout=10).json()
+        }, timeout=15)
+        tok = r.json() if r.content else {}
+        if r.status_code != 200 or "error" in tok:
+            raise ValueError(f"token:{tok.get('error', r.status_code)}")
+        info = {}
+        # Prefer claims from the ID token (TLS-direct from Auth0, so signature check not needed).
+        idt = tok.get("id_token")
+        if idt:
+            import base64, json
+            part = idt.split(".")[1]
+            info = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+        if not info.get("email") and tok.get("access_token"):
+            step = "userinfo"
+            info = _rq.get(md["userinfo_endpoint"], headers={
+                "Authorization": f"Bearer {tok['access_token']}"}, timeout=15).json()
         email = str(info.get("email") or "").strip()
         if not email:
             raise ValueError("no email")
-        st.session_state["_a0_user"] = {"email": email, "name": str(info.get("name") or "")}
-    except Exception:
-        st.sidebar.warning("Email-code sign-in didn't finish. Please try again.")
+        user = {"email": email, "name": str(info.get("name") or "")}
+        cache[key] = (now, user)
+        st.session_state["_a0_user"] = user
+    except Exception as e:
+        why = str(e) if isinstance(e, ValueError) else type(e).__name__
+        st.sidebar.warning(f"Email-code sign-in didn't finish ({step}: {why[:60]}). Please try again.")
 
 
 def _a0_user():
