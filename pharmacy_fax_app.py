@@ -296,6 +296,7 @@ def _users_gate():
         st.warning(f"Waiting for approval. Access for {email} has been requested. Reload this page after it's approved.")
         with st.form("license_form"):
             st.write("Help us verify you faster: enter your Arizona license.")
+            st.markdown("[Verify on AZ Board](https://azbop.igovsolution.net/online/Lookups/AZIndividual_Lookup.aspx) · [pharmacy.az.gov/verify](https://pharmacy.az.gov/verify)")
             f_name = st.text_input("Full name (as on license)", value=name)
             f_role = st.selectbox("Role", ["Pharmacist", "Pharmacy Technician", "Pharmacy Intern"])
             f_num = st.text_input("AZ license number")
