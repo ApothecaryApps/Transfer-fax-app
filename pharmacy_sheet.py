@@ -600,7 +600,11 @@ def log_sign_in(email: str, name: str = ""):
 # Users tab: email | name | status | added_phoenix | note
 # status: approved / pending / denied / suspended. Craig edits status by hand.
 USERS_TAB = "Users"
-USERS_HEADERS = ["email", "name", "status", "added_phoenix", "note"]
+USERS_HEADERS = [
+    "email", "full_name", "role", "license_state", "license_number",
+    "pharmacy_name", "pharmacy_store_number", "pharmacy_city", "pharmacy_state",
+    "vouched_by", "status", "requested_at", "approved_at", "approved_by", "notes",
+]
 USER_STATUSES = ("approved", "pending", "denied", "suspended")
 
 
@@ -627,9 +631,14 @@ def get_user_status(email: str, name: str = "", default_status: str = "pending")
         if str(row.get("email", "")).strip().lower() == email:
             status = str(row.get("status", "")).strip().lower()
             return status if status in USER_STATUSES else "pending"
-    ws.append_row(
-        [email, (name or "").strip(), default_status,
-         _phoenix_now().strftime("%Y-%m-%d %H:%M:%S"), "auto-added at sign-in"],
-        value_input_option="RAW",
-    )
+    headers = [str(h).strip().lower() for h in ws.row_values(1)] or USERS_HEADERS
+    values = {
+        "email": email,
+        "full_name": (name or "").strip(),
+        "status": default_status,
+        "requested_at": _phoenix_now().strftime("%Y-%m-%d %H:%M:%S"),
+        "notes": "auto-added at sign-in",
+    }
+    ws.append_row([values.get(h, "") for h in headers],
+                  value_input_option="RAW", table_range="A1")
     return default_status
