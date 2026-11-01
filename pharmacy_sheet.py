@@ -604,7 +604,9 @@ USERS_HEADERS = [
     "email", "full_name", "role", "license_state", "license_number",
     "pharmacy_name", "pharmacy_store_number", "pharmacy_city", "pharmacy_state",
     "vouched_by", "status", "requested_at", "approved_at", "approved_by", "notes",
+    "verify_link",
 ]
+AZ_BOARD_LOOKUP_URL = "https://azbop.igovsolution.net/online/Lookups/AZIndividual_Lookup.aspx"
 USER_STATUSES = ("approved", "pending", "denied", "suspended")
 
 
@@ -638,6 +640,7 @@ def get_user_status(email: str, name: str = "", default_status: str = "pending")
         "status": default_status,
         "requested_at": _phoenix_now().strftime("%Y-%m-%d %H:%M:%S"),
         "notes": "auto-added at sign-in",
+        "verify_link": AZ_BOARD_LOOKUP_URL if default_status == "pending" else "",
     }
     ws.append_row([values.get(h, "") for h in headers],
                   value_input_option="RAW", table_range="A1")
