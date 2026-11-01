@@ -13,7 +13,7 @@ import importlib
 import pharmacy_sheet as _ps
 importlib.reload(_ps)  # make sure Streamlit uses the latest pharmacy_sheet.py
 from pharmacy_sheet import search_pharmacies, add_pharmacy, digits_only, add_feedback
-from pharmacy_sheet import log_sign_in, get_user_status
+from pharmacy_sheet import log_sign_in, get_user_status, save_user_license
 from pharmacy_sheet import (
     log_fax,
     update_fax_log,
@@ -294,6 +294,24 @@ def _users_gate():
     st.title("Rx Transfer Fax")
     if status == "pending":
         st.warning(f"Waiting for approval. Access for {email} has been requested. Reload this page after it's approved.")
+        with st.form("license_form"):
+            st.write("Help us verify you faster: enter your Arizona license.")
+            f_name = st.text_input("Full name (as on license)", value=name)
+            f_role = st.selectbox("Role", ["Pharmacist", "Pharmacy Technician", "Pharmacy Intern"])
+            f_num = st.text_input("AZ license number")
+            f_pharm = st.text_input("Pharmacy name")
+            f_store = st.text_input("Store number")
+            f_city = st.text_input("Pharmacy city")
+            if st.form_submit_button("Submit license"):
+                try:
+                    ok = save_user_license(email, {
+                        "full_name": f_name, "role": f_role, "license_state": "AZ",
+                        "license_number": f_num, "pharmacy_name": f_pharm,
+                        "pharmacy_store_number": f_store, "pharmacy_city": f_city,
+                        "pharmacy_state": "AZ"})
+                    st.success("Saved. We'll verify with the AZ Board of Pharmacy.") if ok else st.error("Couldn't save. Try again.")
+                except Exception:
+                    st.error("Couldn't save right now. Try again in a minute.")
     elif status in ("denied", "suspended"):
         st.error(f"Access for {email} is {status}. Contact the pharmacy owner if you think this is a mistake.")
     else:

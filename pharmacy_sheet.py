@@ -642,3 +642,23 @@ def get_user_status(email: str, name: str = "", default_status: str = "pending")
     ws.append_row([values.get(h, "") for h in headers],
                   value_input_option="RAW", table_range="A1")
     return default_status
+
+
+def save_user_license(email: str, fields: dict) -> bool:
+    """Write license/pharmacy fields onto the user's existing Users row. Never touches status."""
+    email = (email or "").strip().lower()
+    allowed = {"full_name", "role", "license_state", "license_number", "pharmacy_name",
+               "pharmacy_store_number", "pharmacy_city", "pharmacy_state"}
+    updates = {k: str(v).strip() for k, v in (fields or {}).items() if k in allowed}
+    if not email or not updates:
+        return False
+    ws = _users_ws()
+    for i, row in enumerate(ws.get_all_records(), start=2):
+        if str(row.get("email", "")).strip().lower() == email:
+            headers = [str(h).strip().lower() for h in ws.row_values(1)]
+            data = [{"range": gspread.utils.rowcol_to_a1(i, headers.index(k) + 1), "values": [[v]]}
+                    for k, v in updates.items() if k in headers]
+            if data:
+                ws.batch_update(data, value_input_option="RAW")
+            return bool(data)
+    return False
