@@ -594,3 +594,42 @@ def log_sign_in(email: str, name: str = ""):
         ],
         value_input_option="RAW",
     )
+
+
+# ---------- Users gate ----------
+# Users tab: email | name | status | added_phoenix | note
+# status: approved / pending / denied / suspended. Craig edits status by hand.
+USERS_TAB = "Users"
+USERS_HEADERS = ["email", "name", "status", "added_phoenix", "note"]
+USER_STATUSES = ("approved", "pending", "denied", "suspended")
+
+
+def _users_ws():
+    if "SHEET_ID" not in st.secrets:
+        raise ValueError("Missing SHEET_ID in Streamlit Secrets")
+    sh = _client().open_by_key(st.secrets["SHEET_ID"])
+    try:
+        return sh.worksheet(USERS_TAB)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title=USERS_TAB, rows=500, cols=len(USERS_HEADERS),
+                              index=len(sh.worksheets()))
+        ws.append_row(USERS_HEADERS, value_input_option="RAW")
+        return ws
+
+
+def get_user_status(email: str, name: str = "", default_status: str = "pending") -> str:
+    """Return status for email (lowercased match). Missing email -> append a row with default_status."""
+    email = (email or "").strip().lower()
+    if not email:
+        return "denied"
+    ws = _users_ws()
+    for row in ws.get_all_records():
+        if str(row.get("email", "")).strip().lower() == email:
+            status = str(row.get("status", "")).strip().lower()
+            return status if status in USER_STATUSES else "pending"
+    ws.append_row(
+        [email, (name or "").strip(), default_status,
+         _phoenix_now().strftime("%Y-%m-%d %H:%M:%S"), "auto-added at sign-in"],
+        value_input_option="RAW",
+    )
+    return default_status

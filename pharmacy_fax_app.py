@@ -13,7 +13,7 @@ import importlib
 import pharmacy_sheet as _ps
 importlib.reload(_ps)  # make sure Streamlit uses the latest pharmacy_sheet.py
 from pharmacy_sheet import search_pharmacies, add_pharmacy, digits_only, add_feedback
-from pharmacy_sheet import log_sign_in
+from pharmacy_sheet import log_sign_in, get_user_status
 from pharmacy_sheet import (
     log_fax,
     update_fax_log,
@@ -248,6 +248,60 @@ def _log_sign_in_once():
 
 
 _log_sign_in_once()
+
+
+# ---------- Users gate ----------
+# Owner emails are always approved (more can be added via OWNER_EMAILS in secrets).
+_OWNER_EMAILS = {"craig.paysonapoth@gmail.com"}
+
+
+def _owner_emails():
+    out = set(_OWNER_EMAILS)
+    try:
+        extra = st.secrets.get("OWNER_EMAILS", [])
+        if isinstance(extra, str):
+            extra = extra.split(",")
+        out |= {str(e).strip().lower() for e in extra if str(e).strip()}
+    except Exception:
+        pass
+    return out
+
+
+def _users_gate():
+    """Stop the app unless the signed-in email is approved in the Users tab."""
+    if not _auth_configured():
+        return
+    if not _is_signed_in():
+        st.title("Rx Transfer Fax")
+        st.info("Please sign in from the sidebar (Google, or email code) to use the app.")
+        st.stop()
+    email = _current_user_email().strip().lower()
+    a0 = _a0_user()
+    name = a0["name"] if a0 else str(getattr(st.user, "name", "") or "")
+    owner = email in _owner_emails()
+    key = f"_gate_status_{email}"
+    status = st.session_state.get(key)
+    if status != "approved":
+        try:
+            status = get_user_status(email, name, default_status="approved" if owner else "pending")
+        except Exception:
+            status = "error"
+        if owner:
+            status = "approved"
+        st.session_state[key] = status
+    if status == "approved":
+        return
+    st.title("Rx Transfer Fax")
+    if status == "pending":
+        st.warning(f"Waiting for approval. Access for {email} has been requested. Reload this page after it's approved.")
+    elif status in ("denied", "suspended"):
+        st.error(f"Access for {email} is {status}. Contact the pharmacy owner if you think this is a mistake.")
+    else:
+        st.error("Couldn't check your access right now. Please try again in a minute.")
+    st.stop()
+
+
+_users_gate()
 
 
 def _safe_log_fax(**kw):
