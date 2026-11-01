@@ -310,7 +310,10 @@ def _users_gate():
                         "license_number": f_num, "pharmacy_name": f_pharm,
                         "pharmacy_store_number": f_store, "pharmacy_city": f_city,
                         "pharmacy_state": "AZ"})
-                    st.success("Saved. We'll verify with the AZ Board of Pharmacy.") if ok else st.error("Couldn't save. Try again.")
+                    if ok:
+                        st.success("Saved. We'll verify with the AZ Board of Pharmacy.")
+                    else:
+                        st.error("Couldn't save. Try again.")
                 except Exception:
                     st.error("Couldn't save right now. Try again in a minute.")
     elif status in ("denied", "suspended"):
