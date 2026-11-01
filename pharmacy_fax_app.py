@@ -46,7 +46,88 @@ def _auth0_configured() -> bool:
         return False
 
 
+# ---- Auth0 email-code sign-in (custom OAuth so connection=email is always sent) ----
+_AUTH0_DEFAULT_REDIRECT = "https://rx-transfer.streamlit.app/"
+
+
+def _a0_cfg():
+    c = st.secrets["auth"]["auth0"]
+    return {
+        "client_id": str(c["client_id"]),
+        "client_secret": str(c["client_secret"]),
+        "metadata": str(c["server_metadata_url"]),
+        "redirect": str(c.get("email_redirect_uri", _AUTH0_DEFAULT_REDIRECT)),
+    }
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _a0_metadata(url: str) -> dict:
+    import requests as _rq
+    return _rq.get(url, timeout=10).json()
+
+
+def _a0_sign(msg: str, key: str) -> str:
+    import hmac, hashlib
+    return hmac.new(key.encode(), msg.encode(), hashlib.sha256).hexdigest()
+
+
+def _a0_authorize_url() -> str:
+    import secrets as _sec, time
+    from urllib.parse import urlencode
+    cfg = _a0_cfg()
+    msg = f"{int(time.time())}.{_sec.token_urlsafe(12)}"
+    state = f"{msg}.{_a0_sign(msg, cfg['client_secret'])}"
+    q = {
+        "response_type": "code",
+        "client_id": cfg["client_id"],
+        "redirect_uri": cfg["redirect"],
+        "scope": "openid email profile",
+        "connection": "email",
+        "prompt": "login",
+        "state": state,
+    }
+    return _a0_metadata(cfg["metadata"])["authorization_endpoint"] + "?" + urlencode(q)
+
+
+def _a0_handle_callback():
+    """If Auth0 just redirected back with ?code&state, finish sign-in into session_state."""
+    import time
+    qp = st.query_params
+    code, state = qp.get("code"), qp.get("state")
+    if not code or not state:
+        return
+    try:
+        st.query_params.clear()
+        cfg = _a0_cfg()
+        ts, nonce, sig = state.split(".", 2)
+        if _a0_sign(f"{ts}.{nonce}", cfg["client_secret"]) != sig or time.time() - int(ts) > 900:
+            raise ValueError("bad state")
+        import requests as _rq
+        md = _a0_metadata(cfg["metadata"])
+        tok = _rq.post(md["token_endpoint"], data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": cfg["redirect"],
+            "client_id": cfg["client_id"],
+            "client_secret": cfg["client_secret"],
+        }, timeout=10).json()
+        info = _rq.get(md["userinfo_endpoint"], headers={
+            "Authorization": f"Bearer {tok['access_token']}"}, timeout=10).json()
+        email = str(info.get("email") or "").strip()
+        if not email:
+            raise ValueError("no email")
+        st.session_state["_a0_user"] = {"email": email, "name": str(info.get("name") or "")}
+    except Exception:
+        st.sidebar.warning("Email-code sign-in didn't finish. Please try again.")
+
+
+def _a0_user():
+    return st.session_state.get("_a0_user")
+
+
 def _is_signed_in() -> bool:
+    if _a0_user():
+        return True
     try:
         return bool(getattr(st.user, "is_logged_in", False))
     except Exception:
@@ -55,6 +136,8 @@ def _is_signed_in() -> bool:
 
 def _current_user_email() -> str:
     # Google sign-in first (st.user when logged in), then the older fallbacks.
+    if _a0_user():
+        return _a0_user()["email"]
     try:
         if _is_signed_in():
             email = getattr(st.user, "email", None)
@@ -78,7 +161,12 @@ def _sign_in_box():
         with st.sidebar:
             if not _auth_configured() or not hasattr(st, "login"):
                 return
-            if _is_signed_in():
+            if _a0_user():
+                st.caption(f"Signed in as {_a0_user()['email']}")
+                if st.button("Sign out", key="auth_sign_out"):
+                    st.session_state.pop("_a0_user", None)
+                    st.rerun()
+            elif _is_signed_in():
                 st.caption(f"Signed in as {getattr(st.user, 'email', '') or 'your account'}")
                 if st.button("Sign out", key="auth_sign_out"):
                     st.logout()
@@ -87,12 +175,13 @@ def _sign_in_box():
                     st.login()
                 if _auth0_configured():
                     st.caption("No Gmail? Use your work or other email. We'll email you a code.")
-                    if st.button("Sign in with email code", key="auth0_sign_in"):
-                        st.login("auth0")
+                    st.link_button("Sign in with email code", _a0_authorize_url())
     except Exception:
         st.sidebar.caption("Sign-in is unavailable right now. You can still use the app.")
 
 
+if _auth0_configured():
+    _a0_handle_callback()
 _sign_in_box()
 
 
@@ -101,14 +190,16 @@ def _log_sign_in_once():
     try:
         if not _is_signed_in():
             return
-        email = str(getattr(st.user, "email", "") or "").strip()
+        a0 = _a0_user()
+        email = (a0["email"] if a0 else str(getattr(st.user, "email", "") or "")).strip()
+        name = a0["name"] if a0 else str(getattr(st.user, "name", "") or "")
         if not email:
             return
         flag = f"_signin_logged_{email.lower()}"
         if st.session_state.get(flag):
             return
         st.session_state[flag] = True  # set first so a Sheet error can't cause repeat tries each rerun
-        log_sign_in(email, str(getattr(st.user, "name", "") or ""))
+        log_sign_in(email, name)
     except Exception:
         pass
 
