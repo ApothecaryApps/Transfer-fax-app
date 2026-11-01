@@ -647,6 +647,38 @@ with st.container(border=True):
 with st.container(border=True):
     st.markdown('<p class="section-label patient">Patient</p>', unsafe_allow_html=True)
     st.caption("Keep real patient details in the app only — don’t paste them into chat.")
+    with st.expander("📷 Scan bottle / form (optional)"):
+        st.caption("Photo is read in memory only and not saved. Always check the fields below before sending.")
+        _scan = st.file_uploader("Bottle label or transfer form photo", type=["png", "jpg", "jpeg", "webp"], key="scan_img")
+        if _scan is not None and st.button("Read photo", key="scan_go"):
+            import ocr_scan
+            if not ocr_scan.ocr_available():
+                st.warning("Photo reading isn’t available on this server yet — enter fields by hand.")
+            else:
+                try:
+                    _f = ocr_scan.parse_fields(ocr_scan.image_to_text(_scan.getvalue()))
+                except Exception:
+                    _f = None
+                    st.warning("Couldn’t read that photo — try a closer, well-lit shot.")
+                if _f is not None:
+                    _got = []
+                    if _f["name"]:
+                        st.session_state.pat_name = _f["name"]
+                        _got.append("name")
+                    if _f["dob"]:
+                        st.session_state.pat_dob = _f["dob"]
+                        _got.append("DOB")
+                    if _f["rx"]:
+                        _cur = [r for r in st.session_state.rx_list if r.strip()]
+                        _new = _cur + [r for r in _f["rx"] if r not in _cur]
+                        st.session_state.rx_list = _new
+                        for _i in range(len(_new)):
+                            st.session_state.pop(f"rx_{_i}", None)
+                        _got.append(f"{len(_f['rx'])} Rx #")
+                    if _got:
+                        st.success("Filled: " + ", ".join(_got) + ". Review and fix before sending.")
+                    else:
+                        st.info("Nothing recognized — enter fields by hand.")
     p1, p2 = st.columns(2)
     with p1:
         pat_name = st.text_input("Patient Full Name", key="pat_name")
