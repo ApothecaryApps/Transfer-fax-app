@@ -186,11 +186,18 @@ def read_image(data: bytes):
             notes.append(f"Tesseract error: {type(e).__name__}")
     else:
         notes.append("Tesseract not installed on server")
-    if _alnum(text) >= 25:
+    def _hits(t):
+        f = parse_fields(t)
+        return bool(f["name"]) + bool(f["dob"]) + bool(f["rx"])
+    t_hits = _hits(text) if text else 0
+    if _alnum(text) >= 25 and t_hits == 3:
         return text, "Tesseract", notes
+    if text:
+        notes.append(f"Tesseract found {t_hits}/3 fields, trying Google Vision")
     try:
         vt = vision_text(data)
-        if _alnum(vt) >= _alnum(text):
+        v_hits = _hits(vt)
+        if v_hits > t_hits or (v_hits == t_hits and _alnum(vt) > _alnum(text)):
             return vt, "Google Vision", notes
     except Exception as e:
         notes.append(str(e)[:200] if isinstance(e, RuntimeError) else f"Vision error: {type(e).__name__}")
