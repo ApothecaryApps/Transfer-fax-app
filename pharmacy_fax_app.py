@@ -119,6 +119,8 @@ def _a0_handle_callback():
         cache.pop(k, None)
     if key in cache:
         st.session_state["_a0_user"] = dict(cache[key][1])
+        st.session_state["_a0_cookie_set"] = True
+        st.session_state.pop("_a0_out", None)
         return
     step = "config"
     try:
@@ -159,9 +161,60 @@ def _a0_handle_callback():
         user = {"email": email, "name": str(info.get("name") or "")}
         cache[key] = (now, user)
         st.session_state["_a0_user"] = user
+        st.session_state["_a0_cookie_set"] = True
+        st.session_state.pop("_a0_out", None)
     except Exception as e:
         why = str(e) if isinstance(e, ValueError) else type(e).__name__
         st.sidebar.warning(f"Email-code sign-in didn't finish ({step}: {why[:60]}). Please try again.")
+
+
+_A0_COOKIE = "a0_session"
+_A0_COOKIE_DAYS = 30
+
+
+def _a0_cookie_make(user: dict) -> str:
+    import base64, json, time
+    body = base64.urlsafe_b64encode(json.dumps({
+        "e": user.get("email", ""), "n": user.get("name", ""),
+        "x": int(time.time()) + _A0_COOKIE_DAYS * 86400,
+    }).encode()).decode().rstrip("=")
+    return f"{body}.{_a0_sign('cookie.' + body, _a0_cfg()['client_secret'])}"
+
+
+def _a0_cookie_read():
+    """Restore email-code sign-in from the signed cookie (no PHI: email + name only)."""
+    import base64, hmac, json, time
+    try:
+        raw = st.context.cookies.get(_A0_COOKIE)
+        if not raw:
+            return None
+        body, sig = raw.rsplit(".", 1)
+        if not hmac.compare_digest(_a0_sign("cookie." + body, _a0_cfg()["client_secret"]), sig):
+            return None
+        d = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+        if int(d.get("x", 0)) < time.time() or not d.get("e"):
+            return None
+        return {"email": str(d["e"]), "name": str(d.get("n") or "")}
+    except Exception:
+        return None
+
+
+def _a0_cookie_js(value: str, max_age: int):
+    import json
+    import streamlit.components.v1 as _c
+    v = json.dumps(f"{_A0_COOKIE}={value}; Max-Age={max_age}; Path=/; SameSite=Lax; Secure")
+    _c.html(f"<script>try{{window.parent.document.cookie={v};}}catch(e){{}}"
+            f"try{{document.cookie={v};}}catch(e){{}}</script>", height=0)
+
+
+def _a0_cookie_sync():
+    try:
+        if st.session_state.pop("_a0_cookie_set", False) and _a0_user():
+            _a0_cookie_js(_a0_cookie_make(_a0_user()), _A0_COOKIE_DAYS * 86400)
+        elif st.session_state.get("_a0_out"):
+            _a0_cookie_js("", 0)
+    except Exception:
+        pass
 
 
 def _a0_user():
@@ -208,6 +261,7 @@ def _sign_in_box():
                 st.caption(f"Signed in as {_a0_user()['email']}")
                 if st.button("Sign out", key="auth_sign_out"):
                     st.session_state.pop("_a0_user", None)
+                    st.session_state["_a0_out"] = True
                     st.rerun()
             elif _is_signed_in():
                 st.caption(f"Signed in as {getattr(st.user, 'email', '') or 'your account'}")
@@ -225,7 +279,14 @@ def _sign_in_box():
 
 if _auth0_configured():
     _a0_handle_callback()
+    if not _a0_user() and not st.session_state.get("_a0_out"):
+        _restored = _a0_cookie_read()
+        if _restored:
+            st.session_state["_a0_user"] = _restored
 _sign_in_box()
+if _auth0_configured():
+    with st.sidebar:
+        _a0_cookie_sync()
 
 
 def _log_sign_in_once():
