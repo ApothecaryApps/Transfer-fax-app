@@ -547,6 +547,38 @@ with st.container(border=True):
     with r7:
         tech_name = st.text_input("Technician", "Dantae Stires")
 
+    r8, r9, r10 = st.columns([2, 2, 2])
+    with r8:
+        req_dea = st.text_input("Pharmacy DEA #", "", placeholder="e.g. AB1234567")
+    with r9:
+        req_npi = st.text_input("Pharmacy NPI", "", placeholder="10 digits", max_chars=10)
+    with r10:
+        st.write("")
+        if st.button("🔎 Check NPI", key="npi_check", use_container_width=True):
+            _n = "".join(ch for ch in (req_npi or "") if ch.isdigit())
+            if len(_n) != 10:
+                st.warning("NPI should be 10 digits.")
+            else:
+                try:
+                    import requests as _rq
+
+                    _j = _rq.get(
+                        "https://npiregistry.cms.hhs.gov/api/",
+                        params={"number": _n, "version": "2.1"},
+                        timeout=8,
+                    ).json()
+                    _res = (_j.get("results") or [None])[0]
+                    if _res:
+                        _b = _res.get("basic", {})
+                        _nm = _b.get("organization_name") or (
+                            f"{_b.get('first_name', '')} {_b.get('last_name', '')}".strip()
+                        )
+                        st.success(f"NPI {_n}: {_nm} (status {_b.get('status', '?')})")
+                    else:
+                        st.warning("NPI not found in the national registry.")
+                except Exception:
+                    st.warning("NPI lookup unavailable right now — enter it by hand.")
+
     fax_title = st.text_input("Fax Title", "Prescription Transfer Request")
 
 # ========== RECEIVING PHARMACY ==========
@@ -804,7 +836,10 @@ def build_pdf_bytes() -> bytes:
     story.append(
         Paragraph(
             f"<b>{req_name}</b><br/>{req_address}<br/>{req_citystatezip}<br/>"
-            f"Phone: {req_phone} Fax: {req_fax}<br/>Requesting: {pharmacist_name}"
+            f"Phone: {req_phone} Fax: {req_fax}"
+            + (f"<br/>DEA: {req_dea}" if (req_dea or "").strip() else "")
+            + (f"<br/>NPI: {req_npi}" if (req_npi or "").strip() else "")
+            + f"<br/>Requesting: {pharmacist_name}"
             + (f"<br/>Technician: {tech_name}" if tech_name.strip() else ""),
             styles["Normal"],
         )
@@ -859,7 +894,42 @@ with st.container(border=True):
     if _flash_fail:
         st.error(f"❌ {_flash_fail} Form cleared — please re-enter and try again.")
     _attempted = False
-    if st.button("📠 Generate PDF & Send Fax", type="primary", use_container_width=True):
+    _preview_on = st.toggle("Preview PDF before sending", value=True, key="preview_on")
+    _go = False
+    if not _preview_on:
+        st.session_state.pop("_preview_shown", None)
+        _go = st.button("📠 Generate PDF & Send Fax", type="primary", use_container_width=True)
+    else:
+        if st.button("👀 Preview fax", use_container_width=True):
+            if not (recv_name or "").strip() or not (recv_fax_number or "").strip():
+                st.error("Please enter receiving pharmacy name and fax number")
+            else:
+                st.session_state["_preview_shown"] = True
+        if st.session_state.get("_preview_shown"):
+            try:
+                _pv = build_pdf_bytes()
+                try:
+                    import pypdfium2 as _pdfium
+
+                    _doc = _pdfium.PdfDocument(_pv)
+                    for _i in range(len(_doc)):
+                        st.image(_doc[_i].render(scale=1.4).to_pil(), use_container_width=True)
+                    _doc.close()
+                except Exception:
+                    st.download_button("Open preview PDF", _pv, file_name="preview.pdf", mime="application/pdf")
+                _pv = None  # memory only
+            except Exception:
+                st.error("Couldn't build preview.")
+            st.caption("Preview updates if you edit fields above. Nothing is saved.")
+            c_send, c_edit = st.columns(2)
+            with c_send:
+                _go = st.button("✅ Looks good — Send fax", type="primary", use_container_width=True)
+            with c_edit:
+                if st.button("✏️ Close preview", use_container_width=True):
+                    st.session_state.pop("_preview_shown", None)
+                    st.rerun()
+    if _go:
+        st.session_state.pop("_preview_shown", None)
         if not (recv_name or "").strip():
             st.error("Please enter receiving pharmacy name")
         elif not (recv_fax_number or "").strip():
