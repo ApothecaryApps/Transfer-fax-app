@@ -22,7 +22,11 @@ HEADERS = [
     "fax",
     "added_by",
     "added_at",
+    # Added at the END (Nov 2026): optional DEA / NPI. Existing columns unchanged.
+    "dea",
+    "npi",
 ]
+_DIR_BASE = 10
 
 
 def digits_only(value: str) -> str:
@@ -74,7 +78,60 @@ def get_worksheet():
     first = ws.row_values(1)
     if not first:
         ws.append_row(HEADERS, value_input_option="USER_ENTERED")
+    elif first[:_DIR_BASE] == HEADERS[:_DIR_BASE] and len(first) < len(HEADERS):
+        try:
+            missing = HEADERS[len(first):]
+            start = chr(ord("A") + len(first))
+            ws.update(f"{start}1", [missing])
+        except Exception:
+            pass
     return ws
+
+
+def set_pharmacy_npi(name: str, fax: str, npi: str):
+    """Save a looked-up NPI onto a directory row (only if that row's npi is blank)."""
+    try:
+        ws = get_worksheet()
+        f = digits_only(fax)
+        col = HEADERS.index("npi") + 1
+        for i, r in enumerate(_read_rows(ws), start=2):
+            if digits_only(r.get("fax") or "") == f and (r.get("name") or "").strip().lower() == (name or "").strip().lower():
+                if not r.get("npi"):
+                    ws.update_cell(i, col, npi)
+                    clear_pharmacy_cache()
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def lookup_npi(name: str = "", city: str = "", state: str = "", fax: str = "", phone: str = ""):
+    """Best-effort free NPPES lookup for a pharmacy. Returns NPI string or ''.
+    Only returns a match when fax or phone matches (to avoid wrong store)."""
+    import requests
+
+    name = (name or "").strip()
+    if not name:
+        return ""
+    words = name.split()
+    want = {digits_only(fax)[-10:], digits_only(phone)[-10:]} - {""}
+    tries = [" ".join(words[:2]) + "*", words[0] + "*"]
+    for q in tries:
+        try:
+            params = {"version": "2.1", "organization_name": q, "limit": 50, "enumeration_type": "NPI-2"}
+            if state:
+                params["state"] = state
+            if city:
+                params["city"] = city
+            res = requests.get("https://npiregistry.cms.hhs.gov/api/", params=params, timeout=8).json().get("results") or []
+        except Exception:
+            return ""
+        for r in res:
+            for a in r.get("addresses", []):
+                nums = {digits_only(a.get("fax_number", ""))[-10:], digits_only(a.get("telephone_number", ""))[-10:]}
+                if want & nums:
+                    return str(r.get("number") or "")
+    return ""
 
 
 # How long the directory stays cached before it is re-read from the Google Sheet.

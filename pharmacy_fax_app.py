@@ -508,6 +508,8 @@ if st.session_state.pop("_clear_after_send", False):
     st.session_state.rx_list = [""]
     st.session_state.recv_name = ""
     st.session_state.recv_fax = ""
+    st.session_state.recv_dea = ""
+    st.session_state.recv_npi = ""
     st.session_state.pharmacy_hits = []
     st.session_state.pop("_pending_recv_name", None)
     st.session_state.pop("_pending_recv_fax", None)
@@ -525,6 +527,8 @@ if "recv_name" not in st.session_state:
     st.session_state.recv_name = ""
 if "recv_fax" not in st.session_state:
     st.session_state.recv_fax = ""
+for _k in ("recv_dea", "recv_npi"):
+    st.session_state.setdefault(_k, "")
 
 # ========== YOUR PHARMACY (requesting) ==========
 with st.container(border=True):
@@ -549,9 +553,9 @@ with st.container(border=True):
 
     r8, r9, r10 = st.columns([2, 2, 2])
     with r8:
-        req_dea = st.text_input("Pharmacy DEA #", "", placeholder="e.g. AB1234567")
+        req_dea = st.text_input("Pharmacy DEA #", str(st.secrets.get("WESTERN_DEA", "")), placeholder="e.g. AB1234567")
     with r9:
-        req_npi = st.text_input("Pharmacy NPI", "", placeholder="10 digits", max_chars=10)
+        req_npi = st.text_input("Pharmacy NPI", str(st.secrets.get("WESTERN_NPI", "1285749200")), placeholder="10 digits", max_chars=10)
     with r10:
         st.write("")
         if st.button("🔎 Check NPI", key="npi_check", use_container_width=True):
@@ -634,6 +638,7 @@ with st.container(border=True):
                     f"Store #{p['store_number']}" if p.get("store_number") else "",
                     f"Phone {p['phone']}" if p.get("phone") else "",
                     f"Fax {p['fax']}" if p.get("fax") else "",
+                    f"NPI {p['npi']}" if p.get("npi") else "",
                 ]
                 if x and str(x).strip()
             )
@@ -641,6 +646,18 @@ with st.container(border=True):
             if st.button(f"Use: {p.get('name')}", key=f"pick_{i}", use_container_width=True):
                 st.session_state.recv_name = p.get("name") or ""
                 st.session_state.recv_fax = p.get("fax") or ""
+                st.session_state.recv_dea = p.get("dea") or ""
+                _npi = p.get("npi") or ""
+                if not _npi:
+                    try:
+                        from pharmacy_sheet import lookup_npi, set_pharmacy_npi
+
+                        _npi = lookup_npi(p.get("name"), p.get("city"), p.get("state"), p.get("fax"), p.get("phone"))
+                        if _npi:
+                            set_pharmacy_npi(p.get("name"), p.get("fax"), _npi)
+                    except Exception:
+                        _npi = ""
+                st.session_state.recv_npi = _npi
                 st.rerun()
             st.caption(detail)
 
@@ -653,6 +670,11 @@ with st.container(border=True):
         key="recv_fax",
         placeholder="4805551234",
     )
+    _rd, _rn = st.columns(2)
+    with _rd:
+        recv_dea = st.text_input("Receiving DEA # (optional)", key="recv_dea")
+    with _rn:
+        recv_npi = st.text_input("Receiving NPI (optional)", key="recv_npi", max_chars=10)
 
     # --- Add pharmacy panel (toggle + form; not a collapsing expander) ---
     if not st.session_state.add_open:
@@ -846,6 +868,11 @@ def build_pdf_bytes() -> bytes:
     )
     story.append(Spacer(1, 20))
     story.append(Paragraph(f"<b>Transfers requested from:</b> {recv_name}", bold))
+    _rx_ids = " · ".join(
+        x for x in [f"DEA: {recv_dea}" if (recv_dea or "").strip() else "", f"NPI: {recv_npi}" if (recv_npi or "").strip() else ""] if x
+    )
+    if _rx_ids:
+        story.append(Paragraph(_rx_ids, styles["Normal"]))
     story.append(Spacer(1, 15))
     story.append(Paragraph(f"<b>Patient:</b> {pat_name}  DOB: {pat_dob}", bold))
     story.append(Spacer(1, 15))
