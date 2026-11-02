@@ -129,7 +129,8 @@ def _load_directory():
                 (r.get("city") or "").lower(),
                 state_l,
                 digits_only(r.get("zip") or ""),
-                digits_only(r.get("phone") or ""),
+                # Phone search also matches the fax number, in case it was typed in the phone box.
+                digits_only(r.get("phone") or "") + "|" + digits_only(r.get("fax") or ""),
                 blob,
             )
         )

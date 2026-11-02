@@ -942,6 +942,9 @@ with st.expander("📋 Sent faxes", expanded=False):
                 except Exception:
                     pass  # delivery check is a bonus; never break the list
             log_rows = read_fax_log()
+            # Each user only sees the faxes they sent.
+            _me = _current_user_email().strip().lower()
+            log_rows = [r for r in log_rows if (r.get("sent_by") or "").strip().lower() == _me] if _me else []
         except Exception:
             log_rows = None
             st.warning("Couldn't load the Sent faxes log right now. Please try again in a minute.")
