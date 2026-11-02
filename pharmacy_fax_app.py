@@ -710,7 +710,9 @@ with st.container(border=True):
     st.caption("Keep real patient details in the app only — don’t paste them into chat.")
     with st.expander("📷 Scan bottle / form (optional)"):
         st.caption("Photo is read in memory only and not saved. Always check the fields below before sending.")
-        _scan = st.file_uploader("Bottle label or transfer form photo", type=["png", "jpg", "jpeg", "webp"], key="scan_img")
+        with st.form("scan_form", clear_on_submit=True, border=False):
+            _scan = st.file_uploader("Bottle label or transfer form photo", type=["png", "jpg", "jpeg", "webp"], key="scan_img")
+            _scan_go = st.form_submit_button("Read photo")
         _scan_msg = st.session_state.pop("_scan_msg", None)
         _scan_raw = st.session_state.pop("_scan_raw", None)
         if _scan_msg:
@@ -719,7 +721,9 @@ with st.container(border=True):
             with st.expander("What the photo looked like as text"):
                 st.caption("Shown once, not saved. Blank or garbled = photo unreadable; readable = fields not recognized.")
                 st.code(_scan_raw[:500] or "(no text found)")
-        if _scan is not None and st.button("Read photo", key="scan_go"):
+        if _scan_go and _scan is None:
+            st.info("Choose a photo first, then tap Read photo.")
+        if _scan_go and _scan is not None:
             import ocr_scan
             _f = None
             try:
