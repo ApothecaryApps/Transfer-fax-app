@@ -650,13 +650,22 @@ with st.container(border=True):
     with st.expander("📷 Scan bottle / form (optional)"):
         st.caption("Photo is read in memory only and not saved. Always check the fields below before sending.")
         _scan = st.file_uploader("Bottle label or transfer form photo", type=["png", "jpg", "jpeg", "webp"], key="scan_img")
+        _scan_msg = st.session_state.pop("_scan_msg", None)
+        _scan_raw = st.session_state.pop("_scan_raw", None)
+        if _scan_msg:
+            getattr(st, _scan_msg[0])(_scan_msg[1])
+        if _scan_raw is not None:
+            with st.expander("What the photo looked like as text"):
+                st.caption("Shown once, not saved. Blank or garbled = photo unreadable; readable = fields not recognized.")
+                st.code(_scan_raw[:500] or "(no text found)")
         if _scan is not None and st.button("Read photo", key="scan_go"):
             import ocr_scan
             if not ocr_scan.ocr_available():
                 st.warning("Photo reading isn’t available on this server yet — enter fields by hand.")
             else:
                 try:
-                    _f = ocr_scan.parse_fields(ocr_scan.image_to_text(_scan.getvalue()))
+                    _txt = ocr_scan.image_to_text(_scan.getvalue())
+                    _f = ocr_scan.parse_fields(_txt)
                 except Exception:
                     _f = None
                     st.warning("Couldn’t read that photo — try a closer, well-lit shot.")
@@ -676,9 +685,12 @@ with st.container(border=True):
                             st.session_state.pop(f"rx_{_i}", None)
                         _got.append(f"{len(_f['rx'])} Rx #")
                     if _got:
-                        st.success("Filled: " + ", ".join(_got) + ". Review and fix before sending.")
+                        st.session_state._scan_msg = ("success", "Filled: " + ", ".join(_got) + ". Review and fix before sending.")
                     else:
-                        st.info("Nothing recognized — enter fields by hand.")
+                        st.session_state._scan_msg = ("info", "Nothing recognized — enter fields by hand.")
+                    if len(_got) < 3:
+                        st.session_state._scan_raw = _txt
+                    st.rerun()
     p1, p2 = st.columns(2)
     with p1:
         pat_name = st.text_input("Patient Full Name", key="pat_name")
