@@ -721,37 +721,39 @@ with st.container(border=True):
                 st.code(_scan_raw[:500] or "(no text found)")
         if _scan is not None and st.button("Read photo", key="scan_go"):
             import ocr_scan
-            if not ocr_scan.ocr_available():
-                st.warning("Photo reading isn’t available on this server yet — enter fields by hand.")
-            else:
-                try:
-                    _txt = ocr_scan.image_to_text(_scan.getvalue())
+            _f = None
+            try:
+                _txt, _eng, _notes = ocr_scan.read_image(_scan.getvalue())
+                if _eng == "none":
+                    st.warning("Couldn’t read that photo. " + "; ".join(_notes))
+                else:
                     _f = ocr_scan.parse_fields(_txt)
-                except Exception:
-                    _f = None
-                    st.warning("Couldn’t read that photo — try a closer, well-lit shot.")
-                if _f is not None:
-                    _got = []
-                    if _f["name"]:
-                        st.session_state.pat_name = _f["name"]
-                        _got.append("name")
-                    if _f["dob"]:
-                        st.session_state.pat_dob = _f["dob"]
-                        _got.append("DOB")
-                    if _f["rx"]:
-                        _cur = [r for r in st.session_state.rx_list if r.strip()]
-                        _new = _cur + [r for r in _f["rx"] if r not in _cur]
-                        st.session_state.rx_list = _new
-                        for _i in range(len(_new)):
-                            st.session_state.pop(f"rx_{_i}", None)
-                        _got.append(f"{len(_f['rx'])} Rx #")
-                    if _got:
-                        st.session_state._scan_msg = ("success", "Filled: " + ", ".join(_got) + ". Review and fix before sending.")
-                    else:
-                        st.session_state._scan_msg = ("info", "Nothing recognized — enter fields by hand.")
-                    if len(_got) < 3:
-                        st.session_state._scan_raw = _txt
-                    st.rerun()
+            except Exception as _e:
+                st.warning(f"Couldn’t read that photo ({type(_e).__name__}).")
+            if _f is not None:
+                _got = []
+                if _f["name"]:
+                    st.session_state.pat_name = _f["name"]
+                    _got.append("name")
+                if _f["dob"]:
+                    st.session_state.pat_dob = _f["dob"]
+                    _got.append("DOB")
+                if _f["rx"]:
+                    _cur = [r for r in st.session_state.rx_list if r.strip()]
+                    _new = _cur + [r for r in _f["rx"] if r not in _cur]
+                    st.session_state.rx_list = _new
+                    for _i in range(len(_new)):
+                        st.session_state.pop(f"rx_{_i}", None)
+                    _got.append(f"{len(_f['rx'])} Rx #")
+                if _got:
+                    st.session_state._scan_msg = ("success", "Filled: " + ", ".join(_got) + ". Review and fix before sending.")
+                else:
+                    st.session_state._scan_msg = ("info", "Nothing recognized — enter fields by hand.")
+                st.session_state._scan_msg = (st.session_state._scan_msg[0],
+                    st.session_state._scan_msg[1] + f" (read by {_eng}" + (f"; {'; '.join(_notes)}" if _notes else "") + ")")
+                if len(_got) < 3:
+                    st.session_state._scan_raw = _txt
+                st.rerun()
     p1, p2 = st.columns(2)
     with p1:
         pat_name = st.text_input("Patient Full Name", key="pat_name")

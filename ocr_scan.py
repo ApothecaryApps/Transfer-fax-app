@@ -140,3 +140,58 @@ def _find_rx(text):
 def parse_fields(text: str) -> dict:
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     return {"name": _find_name(text, lines), "dob": _find_dob(lines), "rx": _find_rx(text)}
+
+
+def _alnum(t):
+    return len(re.findall(r"[A-Za-z0-9]", t or ""))
+
+
+def vision_text(data: bytes) -> str:
+    """Google Cloud Vision fallback using the existing Sheets service account (free tier 1,000/mo)."""
+    import base64
+    import requests
+    from google.oauth2.service_account import Credentials
+    from google.auth.transport.requests import Request
+    import pharmacy_sheet
+    creds = Credentials.from_service_account_info(
+        pharmacy_sheet._service_account_info(),
+        scopes=["https://www.googleapis.com/auth/cloud-vision"],
+    )
+    creds.refresh(Request())
+    r = requests.post(
+        "https://vision.googleapis.com/v1/images:annotate",
+        headers={"Authorization": f"Bearer {creds.token}"},
+        json={"requests": [{"image": {"content": base64.b64encode(data).decode()},
+                            "features": [{"type": "DOCUMENT_TEXT_DETECTION"}]}]},
+        timeout=30,
+    )
+    j = r.json() if r.content else {}
+    if r.status_code != 200:
+        msg = (j.get("error") or {}).get("message", str(r.status_code))
+        raise RuntimeError(f"Vision {r.status_code}: {msg[:160]}")
+    res = (j.get("responses") or [{}])[0]
+    if res.get("error"):
+        raise RuntimeError(f"Vision: {res['error'].get('message', '')[:160]}")
+    return (res.get("fullTextAnnotation") or {}).get("text", "")
+
+
+def read_image(data: bytes):
+    """Return (text, engine, notes). Tesseract first; Vision if Tesseract missing or weak."""
+    notes = []
+    text = ""
+    if ocr_available():
+        try:
+            text = image_to_text(data)
+        except Exception as e:
+            notes.append(f"Tesseract error: {type(e).__name__}")
+    else:
+        notes.append("Tesseract not installed on server")
+    if _alnum(text) >= 25:
+        return text, "Tesseract", notes
+    try:
+        vt = vision_text(data)
+        if _alnum(vt) >= _alnum(text):
+            return vt, "Google Vision", notes
+    except Exception as e:
+        notes.append(str(e)[:200] if isinstance(e, RuntimeError) else f"Vision error: {type(e).__name__}")
+    return text, "Tesseract" if text else "none", notes
