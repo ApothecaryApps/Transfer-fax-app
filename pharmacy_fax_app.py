@@ -553,7 +553,7 @@ with st.container(border=True):
 
     r8, r9, r10 = st.columns([2, 2, 2])
     with r8:
-        req_dea = st.text_input("Pharmacy DEA #", str(st.secrets.get("WESTERN_DEA", "")), placeholder="e.g. AB1234567")
+        req_dea = st.text_input("Pharmacy DEA #", "", placeholder="e.g. AB1234567")
     with r9:
         req_npi = st.text_input("Pharmacy NPI", str(st.secrets.get("WESTERN_NPI", "1285749200")), placeholder="10 digits", max_chars=10)
     with r10:
