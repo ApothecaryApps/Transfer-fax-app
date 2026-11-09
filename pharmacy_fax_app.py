@@ -13,7 +13,7 @@ import importlib
 import pharmacy_sheet as _ps
 importlib.reload(_ps)  # make sure Streamlit uses the latest pharmacy_sheet.py
 from pharmacy_sheet import search_pharmacies, add_pharmacy, digits_only, add_feedback
-from pharmacy_sheet import log_sign_in, get_user_status, save_user_license
+from pharmacy_sheet import log_sign_in, get_user_status, get_user_status_by_phone, save_user_license
 from pharmacy_sheet import (
     log_fax,
     update_fax_log,
@@ -46,6 +46,36 @@ def _auth0_configured() -> bool:
         return False
 
 
+def _auth0_sms_enabled() -> bool:
+    """True only when Auth0 is configured AND AUTH0_SMS_ENABLED (or auth.auth0.sms_enabled) is on.
+    Hides the SMS UI entirely until Twilio + Auth0 SMS are ready."""
+    if not _auth0_configured():
+        return False
+    try:
+        v = st.secrets.get("AUTH0_SMS_ENABLED", None)
+        if v is None:
+            try:
+                v = st.secrets["auth"]["auth0"].get("sms_enabled", False)
+            except Exception:
+                v = False
+        return str(v).strip().lower() in ("1", "true", "yes", "on")
+    except Exception:
+        return False
+
+
+def _normalize_us_phone(raw: str) -> str:
+    """Normalize a US phone to E.164 (+1XXXXXXXXXX). Raises ValueError if invalid."""
+    s = (raw or "").strip()
+    d = digits_only(s)
+    if len(d) == 10:
+        return "+1" + d
+    if len(d) == 11 and d.startswith("1"):
+        return "+" + d
+    if s.startswith("+") and len(d) >= 10:
+        return "+" + d
+    raise ValueError("Enter a valid US phone number (10 digits)")
+
+
 # ---- Auth0 email-code sign-in (custom OAuth so connection=email is always sent) ----
 _AUTH0_DEFAULT_REDIRECT = "https://rx-transfer.streamlit.app/"
 
@@ -58,6 +88,12 @@ def _a0_cfg():
         "metadata": str(c["server_metadata_url"]),
         "redirect": str(c.get("email_redirect_uri", _AUTH0_DEFAULT_REDIRECT)),
     }
+
+
+def _a0_domain() -> str:
+    """Auth0 tenant base URL derived from server_metadata_url."""
+    md = _a0_cfg()["metadata"]
+    return md.split("/.well-known/")[0].rstrip("/")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -158,7 +194,7 @@ def _a0_handle_callback():
         email = str(info.get("email") or "").strip()
         if not email:
             raise ValueError("no email")
-        user = {"email": email, "name": str(info.get("name") or "")}
+        user = {"email": email, "phone": "", "name": str(info.get("name") or "")}
         cache[key] = (now, user)
         st.session_state["_a0_user"] = user
         st.session_state["_a0_cookie_set"] = True
@@ -175,14 +211,16 @@ _A0_COOKIE_DAYS = 30
 def _a0_cookie_make(user: dict) -> str:
     import base64, json, time
     body = base64.urlsafe_b64encode(json.dumps({
-        "e": user.get("email", ""), "n": user.get("name", ""),
+        "e": user.get("email", ""),
+        "p": user.get("phone", ""),
+        "n": user.get("name", ""),
         "x": int(time.time()) + _A0_COOKIE_DAYS * 86400,
     }).encode()).decode().rstrip("=")
     return f"{body}.{_a0_sign('cookie.' + body, _a0_cfg()['client_secret'])}"
 
 
 def _a0_cookie_read():
-    """Restore email-code sign-in from the signed cookie (no PHI: email + name only)."""
+    """Restore Auth0 sign-in from the signed cookie (no PHI: email/phone + name only)."""
     import base64, hmac, json, time
     try:
         raw = st.context.cookies.get(_A0_COOKIE)
@@ -192,9 +230,11 @@ def _a0_cookie_read():
         if not hmac.compare_digest(_a0_sign("cookie." + body, _a0_cfg()["client_secret"]), sig):
             return None
         d = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
-        if int(d.get("x", 0)) < time.time() or not d.get("e"):
+        email = str(d.get("e") or "")
+        phone = str(d.get("p") or "")
+        if int(d.get("x", 0)) < time.time() or (not email and not phone):
             return None
-        return {"email": str(d["e"]), "name": str(d.get("n") or "")}
+        return {"email": email, "phone": phone, "name": str(d.get("n") or "")}
     except Exception:
         return None
 
@@ -217,6 +257,70 @@ def _a0_cookie_sync():
         pass
 
 
+def _a0_sms_start(phone: str) -> None:
+    """POST /passwordless/start with connection=sms. Raises ValueError on Auth0 errors."""
+    import requests as _rq
+    cfg = _a0_cfg()
+    r = _rq.post(
+        f"{_a0_domain()}/passwordless/start",
+        json={
+            "client_id": cfg["client_id"],
+            "client_secret": cfg["client_secret"],
+            "connection": "sms",
+            "phone_number": phone,
+            "send": "code",
+        },
+        timeout=15,
+    )
+    body = r.json() if r.content else {}
+    if r.status_code >= 400 or body.get("error"):
+        raise ValueError(str(body.get("error_description") or body.get("error") or r.status_code))
+
+
+def _a0_sms_verify(phone: str, code: str) -> dict:
+    """Exchange SMS OTP via /oauth/token (passwordless/otp grant). Returns user dict."""
+    import base64, json
+    import requests as _rq
+    cfg = _a0_cfg()
+    md = _a0_metadata(cfg["metadata"])
+    r = _rq.post(
+        md["token_endpoint"],
+        data={
+            "grant_type": "http://auth0.com/oauth/grant-type/passwordless/otp",
+            "client_id": cfg["client_id"],
+            "client_secret": cfg["client_secret"],
+            "username": phone,
+            "otp": code,
+            "realm": "sms",
+            "scope": "openid profile",
+            "redirect_uri": cfg["redirect"],
+        },
+        timeout=15,
+    )
+    tok = r.json() if r.content else {}
+    if r.status_code != 200 or "error" in tok:
+        raise ValueError(str(tok.get("error_description") or tok.get("error") or r.status_code))
+    info = {}
+    idt = tok.get("id_token")
+    if idt:
+        part = idt.split(".")[1]
+        info = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+    if not info.get("phone_number") and tok.get("access_token"):
+        info = _rq.get(
+            md["userinfo_endpoint"],
+            headers={"Authorization": f"Bearer {tok['access_token']}"},
+            timeout=15,
+        ).json()
+    got_phone = str(info.get("phone_number") or phone).strip()
+    if not got_phone:
+        raise ValueError("no phone")
+    return {
+        "email": str(info.get("email") or "").strip(),
+        "phone": got_phone,
+        "name": str(info.get("name") or "").strip(),
+    }
+
+
 def _a0_user():
     return st.session_state.get("_a0_user")
 
@@ -231,9 +335,10 @@ def _is_signed_in() -> bool:
 
 
 def _current_user_email() -> str:
-    # Google sign-in first (st.user when logged in), then the older fallbacks.
+    """Identity string for logs/gate: email when present, else phone for SMS users."""
     if _a0_user():
-        return _a0_user()["email"]
+        u = _a0_user()
+        return (u.get("email") or u.get("phone") or "").strip() or "unknown"
     try:
         if _is_signed_in():
             email = getattr(st.user, "email", None)
@@ -251,6 +356,11 @@ def _current_user_email() -> str:
     return "unknown"
 
 
+def _current_user_phone() -> str:
+    a0 = _a0_user()
+    return str((a0 or {}).get("phone") or "").strip()
+
+
 def _sign_in_box():
     """Sidebar sign-in / sign-out. Optional for now: the app works either way."""
     try:
@@ -258,9 +368,13 @@ def _sign_in_box():
             if not _auth_configured() or not hasattr(st, "login"):
                 return
             if _a0_user():
-                st.caption(f"Signed in as {_a0_user()['email']}")
+                u = _a0_user()
+                label = (u.get("email") or u.get("phone") or "your account")
+                st.caption(f"Signed in as {label}")
                 if st.button("Sign out", key="auth_sign_out"):
                     st.session_state.pop("_a0_user", None)
+                    st.session_state.pop("_sms_phone", None)
+                    st.session_state.pop("_sms_sent", None)
                     st.session_state["_a0_out"] = True
                     st.rerun()
             elif _is_signed_in():
@@ -270,6 +384,40 @@ def _sign_in_box():
             else:
                 if st.button("Sign in with Google", key="auth_sign_in"):
                     st.login()
+                if _auth0_sms_enabled():
+                    st.caption("Preferred: text a one-time code to your phone.")
+                    phone_raw = st.text_input(
+                        "Mobile phone",
+                        key="sms_phone_input",
+                        placeholder="(928) 555-1234",
+                        help="US numbers only. Standard message rates may apply.",
+                    )
+                    if st.button("Text me a code", key="sms_send_code"):
+                        try:
+                            phone = _normalize_us_phone(phone_raw)
+                            _a0_sms_start(phone)
+                            st.session_state["_sms_phone"] = phone
+                            st.session_state["_sms_sent"] = True
+                            st.success(f"Code sent to {phone}.")
+                        except ValueError as e:
+                            st.warning(str(e) or "Couldn't send the text. Check the number and try again.")
+                        except Exception:
+                            st.warning("Couldn't send the text right now. Try again in a minute.")
+                    if st.session_state.get("_sms_sent") and st.session_state.get("_sms_phone"):
+                        code = st.text_input("Text code", key="sms_code_input", placeholder="123456")
+                        if st.button("Verify text code", key="sms_verify_code"):
+                            try:
+                                user = _a0_sms_verify(st.session_state["_sms_phone"], (code or "").strip())
+                                st.session_state["_a0_user"] = user
+                                st.session_state["_a0_cookie_set"] = True
+                                st.session_state.pop("_a0_out", None)
+                                st.session_state.pop("_sms_sent", None)
+                                st.session_state.pop("_sms_phone", None)
+                                st.rerun()
+                            except ValueError as e:
+                                st.warning(f"Code didn't work ({str(e)[:60]}). Request a new one.")
+                            except Exception:
+                                st.warning("Couldn't verify the code right now. Try again.")
                 if _auth0_configured():
                     st.caption("No Gmail? Use your work or other email. We'll email you a code.")
                     st.link_button("Sign in with email code", _a0_authorize_url())
@@ -295,15 +443,19 @@ def _log_sign_in_once():
         if not _is_signed_in():
             return
         a0 = _a0_user()
-        email = (a0["email"] if a0 else str(getattr(st.user, "email", "") or "")).strip()
-        name = a0["name"] if a0 else str(getattr(st.user, "name", "") or "")
-        if not email:
+        if a0:
+            ident = (a0.get("email") or a0.get("phone") or "").strip()
+            name = (a0.get("name") or "").strip()
+        else:
+            ident = str(getattr(st.user, "email", "") or "").strip()
+            name = str(getattr(st.user, "name", "") or "")
+        if not ident:
             return
-        flag = f"_signin_logged_{email.lower()}"
+        flag = f"_signin_logged_{ident.lower()}"
         if st.session_state.get(flag):
             return
         st.session_state[flag] = True  # set first so a Sheet error can't cause repeat tries each rerun
-        log_sign_in(email, name)
+        log_sign_in(ident, name)
     except Exception:
         pass
 
@@ -329,22 +481,35 @@ def _owner_emails():
 
 
 def _users_gate():
-    """Stop the app unless the signed-in email is approved in the Users tab."""
+    """Stop the app unless the signed-in email/phone is approved in the Users tab."""
     if not _auth_configured():
         return
     if not _is_signed_in():
         st.title("Rx Transfer Fax")
-        st.info("Please sign in from the sidebar (Google, or email code) to use the app.")
+        st.info("Please sign in from the sidebar (Google, text code, or email code) to use the app.")
         st.stop()
-    email = _current_user_email().strip().lower()
     a0 = _a0_user()
-    name = a0["name"] if a0 else str(getattr(st.user, "name", "") or "")
-    owner = email in _owner_emails()
-    key = f"_gate_status_{email}"
+    if a0:
+        phone = str(a0.get("phone") or "").strip()
+        email = str(a0.get("email") or "").strip().lower()
+        name = str(a0.get("name") or "").strip()
+    else:
+        phone = ""
+        email = _current_user_email().strip().lower()
+        if email == "unknown":
+            email = ""
+        name = str(getattr(st.user, "name", "") or "").strip()
+    owner = bool(email) and email in _owner_emails()
+    ident = email or phone or "unknown"
+    key = f"_gate_status_{ident}"
     status = st.session_state.get(key)
     if status != "approved":
         try:
-            status = get_user_status(email, name, default_status="approved" if owner else "pending")
+            default = "approved" if owner else "pending"
+            if phone and not email:
+                status = get_user_status_by_phone(phone, name, default_status=default)
+            else:
+                status = get_user_status(email, name, default_status=default)
         except Exception:
             status = "error"
         if owner:
@@ -354,7 +519,7 @@ def _users_gate():
         return
     st.title("Rx Transfer Fax")
     if status == "pending":
-        st.warning(f"Waiting for approval. Access for {email} has been requested. Reload this page after it's approved.")
+        st.warning(f"Waiting for approval. Access for {ident} has been requested. Reload this page after it's approved.")
         with st.form("license_form"):
             st.write("Help us verify you faster: enter your Arizona license.")
             st.markdown("[Verify on AZ Board](https://azbop.igovsolution.net/online/Lookups/AZIndividual_Lookup.aspx) · [pharmacy.az.gov/verify](https://pharmacy.az.gov/verify)")
@@ -366,11 +531,16 @@ def _users_gate():
             f_city = st.text_input("Pharmacy city")
             if st.form_submit_button("Submit license"):
                 try:
-                    ok = save_user_license(email, {
-                        "full_name": f_name, "role": f_role, "license_state": "AZ",
-                        "license_number": f_num, "pharmacy_name": f_pharm,
-                        "pharmacy_store_number": f_store, "pharmacy_city": f_city,
-                        "pharmacy_state": "AZ"})
+                    ok = save_user_license(
+                        email=email,
+                        phone=phone,
+                        fields={
+                            "full_name": f_name, "role": f_role, "license_state": "AZ",
+                            "license_number": f_num, "pharmacy_name": f_pharm,
+                            "pharmacy_store_number": f_store, "pharmacy_city": f_city,
+                            "pharmacy_state": "AZ",
+                        },
+                    )
                     if ok:
                         st.success("Saved. We'll verify with the AZ Board of Pharmacy.")
                     else:
@@ -378,7 +548,7 @@ def _users_gate():
                 except Exception:
                     st.error("Couldn't save right now. Try again in a minute.")
     elif status in ("denied", "suspended"):
-        st.error(f"Access for {email} is {status}. Contact the pharmacy owner if you think this is a mistake.")
+        st.error(f"Access for {ident} is {status}. Contact the pharmacy owner if you think this is a mistake.")
     else:
         st.error("Couldn't check your access right now. Please try again in a minute.")
     st.stop()

@@ -663,6 +663,9 @@ USERS_HEADERS = [
     "pharmacy_name", "pharmacy_store_number", "pharmacy_city", "pharmacy_state",
     "vouched_by", "status", "requested_at", "approved_at", "approved_by", "notes",
     "verify_link",
+    # phone is appended at the END of an existing Users header row if missing (see
+    # _ensure_users_phone_column). Keep it last here so new sheets match live sheets.
+    "phone",
 ]
 AZ_BOARD_LOOKUP_URL = "https://azbop.igovsolution.net/online/Lookups/AZIndividual_Lookup.aspx"
 USER_STATUSES = ("approved", "pending", "denied", "suspended")
@@ -681,17 +684,39 @@ def _users_ws():
         return ws
 
 
+def _ensure_users_phone_column(ws) -> list:
+    """Append a `phone` header at the END of row 1 if missing. Leaves other columns alone."""
+    headers = [str(h).strip() for h in ws.row_values(1)]
+    if not headers:
+        ws.append_row(USERS_HEADERS, value_input_option="RAW")
+        return list(USERS_HEADERS)
+    lower = [h.lower() for h in headers]
+    if "phone" not in lower:
+        ws.update_cell(1, len(headers) + 1, "phone")
+        headers = headers + ["phone"]
+    return [h.lower() for h in headers]
+
+
+def _phone_digits_key(phone: str) -> str:
+    """Last 10 digits for US matching; empty if too short."""
+    d = digits_only(phone or "")
+    if len(d) >= 10:
+        return d[-10:]
+    return d
+
+
 def get_user_status(email: str, name: str = "", default_status: str = "pending") -> str:
     """Return status for email (lowercased match). Missing email -> append a row with default_status."""
     email = (email or "").strip().lower()
     if not email:
         return "denied"
     ws = _users_ws()
+    _ensure_users_phone_column(ws)
     for row in ws.get_all_records():
         if str(row.get("email", "")).strip().lower() == email:
             status = str(row.get("status", "")).strip().lower()
             return status if status in USER_STATUSES else "pending"
-    headers = [str(h).strip().lower() for h in ws.row_values(1)] or USERS_HEADERS
+    headers = _ensure_users_phone_column(ws)
     values = {
         "email": email,
         "full_name": (name or "").strip(),
@@ -705,18 +730,54 @@ def get_user_status(email: str, name: str = "", default_status: str = "pending")
     return default_status
 
 
-def save_user_license(email: str, fields: dict) -> bool:
-    """Write license/pharmacy fields onto the user's existing Users row. Never touches status."""
+def get_user_status_by_phone(phone: str, name: str = "", default_status: str = "pending") -> str:
+    """Return status for phone (E.164 or digits). Missing phone -> append a pending/approved row."""
+    phone = (phone or "").strip()
+    key = _phone_digits_key(phone)
+    if not key:
+        return "denied"
+    ws = _users_ws()
+    headers = _ensure_users_phone_column(ws)
+    for row in ws.get_all_records():
+        if _phone_digits_key(str(row.get("phone", ""))) == key:
+            status = str(row.get("status", "")).strip().lower()
+            return status if status in USER_STATUSES else "pending"
+    # Prefer storing E.164 when we have 10 US digits.
+    stored = phone if phone.startswith("+") else ("+1" + key if len(key) == 10 else phone)
+    values = {
+        "email": "",
+        "phone": stored,
+        "full_name": (name or "").strip(),
+        "status": default_status,
+        "requested_at": _phoenix_now().strftime("%Y-%m-%d %H:%M:%S"),
+        "notes": "auto-added at SMS sign-in",
+        "verify_link": AZ_BOARD_LOOKUP_URL if default_status == "pending" else "",
+    }
+    ws.append_row([values.get(h, "") for h in headers],
+                  value_input_option="RAW", table_range="A1")
+    return default_status
+
+
+def save_user_license(email: str = "", fields: dict = None, phone: str = "") -> bool:
+    """Write license/pharmacy fields onto the user's existing Users row. Never touches status.
+    Match by email when present; otherwise by phone (last-10 digits)."""
     email = (email or "").strip().lower()
+    phone = (phone or "").strip()
+    phone_key = _phone_digits_key(phone)
     allowed = {"full_name", "role", "license_state", "license_number", "pharmacy_name",
                "pharmacy_store_number", "pharmacy_city", "pharmacy_state"}
     updates = {k: str(v).strip() for k, v in (fields or {}).items() if k in allowed}
-    if not email or not updates:
+    if (not email and not phone_key) or not updates:
         return False
     ws = _users_ws()
+    headers = _ensure_users_phone_column(ws)
     for i, row in enumerate(ws.get_all_records(), start=2):
-        if str(row.get("email", "")).strip().lower() == email:
-            headers = [str(h).strip().lower() for h in ws.row_values(1)]
+        match = False
+        if email and str(row.get("email", "")).strip().lower() == email:
+            match = True
+        elif phone_key and _phone_digits_key(str(row.get("phone", ""))) == phone_key:
+            match = True
+        if match:
             data = [{"range": gspread.utils.rowcol_to_a1(i, headers.index(k) + 1), "values": [[v]]}
                     for k, v in updates.items() if k in headers]
             if data:
