@@ -276,6 +276,7 @@ def _sign_in_box():
                 if _auth0_configured():
                     st.caption("No Gmail? Use your work or other email. We'll email you a code.")
                     st.link_button("Sign in with email code", _a0_authorize_url())
+            st.caption("[Privacy Policy](/?page=privacy) | [Terms and Conditions](/?page=terms)")
     except Exception:
         st.sidebar.caption("Sign-in is unavailable right now. You can still use the app.")
 
@@ -331,6 +332,16 @@ def _owner_emails():
     return out
 
 
+
+_SMS_CONSENT_MD = (
+    "**Text-message login codes:** On this sign-in page you can enter your own mobile number and tap "
+    "\"Text me a code\" to get a one-time login code (2FA / verification code) by text from "
+    "Payson Apothecary Pharmacy, LLC (Rx Transfer). You get one text per code you request; message "
+    "frequency varies. Message and data rates may apply. Reply STOP to opt out, HELP for help. "
+    "We do not sell or share your mobile number. "
+    "[Privacy Policy](/?page=privacy) | [Terms and Conditions](/?page=terms)"
+)
+
 def _users_gate():
     """Stop the app unless the signed-in email is approved in the Users tab."""
     if not _auth_configured():
@@ -338,6 +349,7 @@ def _users_gate():
     if not _is_signed_in():
         st.title("Rx Transfer Fax")
         st.info("Please sign in from the sidebar (Google, or email code) to use the app.")
+        st.markdown(_SMS_CONSENT_MD)
         st.stop()
     email = _current_user_email().strip().lower()
     a0 = _a0_user()
