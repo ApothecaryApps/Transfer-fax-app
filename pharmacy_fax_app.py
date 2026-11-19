@@ -29,6 +29,9 @@ from pharmacy_sheet import (
 
 st.set_page_config(page_title="Pharmacy Transfer Fax", layout="wide")
 
+from legal_pages import render_legal_page
+render_legal_page()  # public /?page=privacy and /?page=terms
+
 
 def _auth_configured() -> bool:
     """True only if the [auth] block exists in Streamlit Secrets."""
